@@ -1,0 +1,70 @@
+# AiTradingMalaysia 马股（MY）每日模拟交易（虚拟资金）
+name: Trading Bot MY
+
+on:
+  schedule:
+    # Bursa 17:00 收市；马来西亚时间 18:30（UTC 10:30），周一到周五
+    - cron: "30 10 * * 1-5"
+  workflow_dispatch: {}          # 可以在 Actions 页面手动 Run workflow
+
+# 同一市场同时只能有一个在跑（新触发的会排队）；和 US 互不影响，可以同时跑
+concurrency:
+  group: trading-bot-MY
+  cancel-in-progress: false
+
+permissions:
+  contents: write                # 需要 commit logs/last_run.json（保持 repo 活跃）
+
+env:
+  MARKET: MY
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m bot.main --market "$MARKET"
+
+      # bot 成功或跳过时才会到这一步（失败会以非零状态结束，GitHub 会寄 email）。
+      # 两个市场的 workflow 可能同时 push：每次重试都先拿最新的 main，
+      # 只把本市场那一段放回 last_run.json，所以不会有合并冲突。
+      - name: Commit last_run.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp logs/last_run.json "$RUNNER_TEMP/last_run.json"
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            python -m scripts.merge_last_run --market "$MARKET" --source "$RUNNER_TEMP/last_run.json"
+            git add logs/last_run.json
+            if git diff --cached --quiet; then
+              echo "last_run.json 没有变化"
+              exit 0
+            fi
+            git commit -q -m "chore: update last_run.json ($MARKET) [skip ci]"
+            if git push -q origin HEAD:main; then
+              echo "已 push（第 $attempt 次）"
+              exit 0
+            fi
+            echo "push 失败（可能另一个市场刚好也在 push），$((attempt * 5)) 秒后重试"
+            sleep $((attempt * 5))
+          done
+          echo "push 重试 5 次都失败"
+          exit 1

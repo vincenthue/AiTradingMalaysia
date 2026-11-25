@@ -21,15 +21,19 @@ async function q(builder) {
   return data ?? []
 }
 
+// 第 6 步之前 dashboard 只显示马股；第 6 步会加上 总览 / 马股 / 美股 切换
+const MARKET = 'MY'
+
 export async function loadAll() {
+  const m = (table) => supabase.from(table).select('*').eq('market', MARKET)
   const [account, positions, prices, trades, snapshots, runs, pending] = await Promise.all([
-    q(supabase.from('account').select('*').eq('id', 1)),
-    q(supabase.from('positions').select('*').order('ticker')),
-    q(supabase.from('latest_prices').select('*')),
-    q(supabase.from('trades').select('*').order('trade_date', { ascending: false }).order('id', { ascending: false }).limit(1000)),
-    q(supabase.from('daily_snapshots').select('*').order('snapshot_date')),
-    q(supabase.from('bot_runs').select('*').order('run_date', { ascending: false }).limit(10)),
-    q(supabase.from('pending_orders').select('*').order('id')),
+    q(m('accounts')),
+    q(m('positions').order('ticker')),
+    q(m('latest_prices')),
+    q(m('trades').order('trade_date', { ascending: false }).order('id', { ascending: false }).limit(1000)),
+    q(m('daily_snapshots').order('snapshot_date')),
+    q(m('bot_runs').order('run_date', { ascending: false }).limit(10)),
+    q(m('pending_orders').order('id')),
   ])
   return { account: account[0] ?? null, positions, prices, trades, snapshots, runs, pending }
 }
