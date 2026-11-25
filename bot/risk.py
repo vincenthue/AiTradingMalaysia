@@ -1,6 +1,6 @@
 """风控规则（PROJECT_SPEC 第 7.3 节）+ 费用计算 + 买入数量计算 + 止损。
 
-- 不能买到现金低于 min_cash_reserve（当然也不能变负数）
+- 买入后现金不能低于 总资产 × min_cash_reserve_pct（当然也不能变负数）
 - 只能整手买卖
 - 不能卖出没有持有的股票（不准做空）
 - 单只股票不能超过 max_position_pct；持仓数不能超过 max_positions
@@ -49,6 +49,11 @@ def buy_cost(quantity: int, price: float, cfg: FeeConfig) -> float:
 # ------------------------------------------------------------- 买入检查
 
 
+def cash_reserve(total_assets: float, risk: RiskConfig) -> float:
+    """买入后至少要保留的现金 = 该市场总资产 × min_cash_reserve_pct。"""
+    return round(max(total_assets, 0.0) * risk.min_cash_reserve_pct, 2)
+
+
 def validate_buy(
     ticker: str,
     quantity: int,
@@ -76,10 +81,12 @@ def validate_buy(
 
     cost = buy_cost(quantity, price, fees)
     if cash - cost < 0:
-        raise RiskViolation(f"{ticker}：现金不足（需要 RM {cost:,.2f}，现金 RM {cash:,.2f}）")
-    if cash - cost < risk.min_cash_reserve:
+        raise RiskViolation(f"{ticker}：现金不足（需要 {cost:,.2f}，现金 {cash:,.2f}）")
+    reserve = cash_reserve(total_assets, risk)
+    if cash - cost < reserve - 1e-9:
         raise RiskViolation(
-            f"{ticker}：买入后现金 RM {cash - cost:,.2f} 低于保留额 RM {risk.min_cash_reserve:,.2f}"
+            f"{ticker}：买入后现金 {cash - cost:,.2f} 低于保留额 {reserve:,.2f}"
+            f"（总资产的 {risk.min_cash_reserve_pct:.0%}）"
         )
 
     if ticker not in positions:
@@ -90,7 +97,7 @@ def validate_buy(
     after = current_position_value + quantity * price
     if after > limit + 1e-9:
         raise RiskViolation(
-            f"{ticker}：仓位 RM {after:,.2f} 超过总资产 {risk.max_position_pct:.0%}（RM {limit:,.2f}）"
+            f"{ticker}：仓位 {after:,.2f} 超过总资产 {risk.max_position_pct:.0%}（{limit:,.2f}）"
         )
 
 
@@ -114,7 +121,7 @@ def max_buy_quantity(
         return 0
     lot_value = price * lot_size
     room_by_pct = total_assets * risk.max_position_pct - current_position_value
-    room_by_cash = cash - risk.min_cash_reserve
+    room_by_cash = cash - cash_reserve(total_assets, risk)
     lots = int(math.floor(min(room_by_pct, room_by_cash) / lot_value + 1e-9))
     # 扣掉费用后可能多算一两手，往下调到通过全部检查为止
     while lots > 0:

@@ -1,7 +1,10 @@
 """入口：一次完整运行的流程（PROJECT_SPEC 第 6 节）。
 
 用法：
-    python -m bot.main --dry-run     # 抓真实股价，但用内存数据库、只把讯息印出来
+    python -m bot.main --market MY             # 正式运行（Supabase + Telegram）
+    python -m bot.main --market US --dry-run   # 抓真实股价，但用内存数据库、只把讯息印出来
+
+每个市场完全独立：自己的账户、时区、“今天”、运行记录；一个市场出错不影响另一个。
 
 最高原则：只用虚拟钱；宁可不交易，也不要错误交易。
 """
@@ -14,13 +17,13 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
-from zoneinfo import ZoneInfo
 
 from bot import data_fetcher as dfetch
 from bot import safety
+from bot.market import before_close_cutoff, local_now, local_today, price
 from bot.broker import SimBroker
 from bot.db import DatabaseError, DatabaseUnavailableError
 from bot.config import (
@@ -29,8 +32,9 @@ from bot.config import (
     ConfigError,
     MissingEnvError,
     Settings,
+    available_markets,
     check_env,
-    load_settings,
+    load_market,
 )
 from bot.models import BotRun, DailySnapshot, PendingOrder
 from bot.notifier import (
@@ -82,27 +86,26 @@ def run_once(
     sleep: Callable[[float], None] = time.sleep,
 ) -> RunOutcome:
     """跑一次完整流程。数据 / 风控问题抛 HaltTrading 或 DataError，由 execute() 统一处理。"""
-    tz = ZoneInfo(settings.timezone)
-    today = now.astimezone(tz).date()
+    # 2. 用该市场自己的时区算“今天”（不能用服务器时间 / 马来西亚时间去算别的市场）
+    today = local_today(settings, now)
 
-    # 2. 幂等检查（已 success 的记录不会被覆盖，跳过只写 log + 发简短通知）
+    # 3. 幂等检查（该市场今天已 success → 跳过，只写 log + 发简短通知）
     if safety.already_succeeded(db, today):
-        msg = f"{today} 已经成功跑过，这次跳过（不会重复交易）"
+        msg = f"{settings.market} {today} 已经成功跑过，这次跳过（不会重复交易）"
         log.info(msg)
-        notifier.send(format_rerun_skip(today))
+        notifier.send(format_rerun_skip(settings, today))
         return RunOutcome("skipped", msg, 0)
 
     # 收市前不运行：盘中价格不是收盘价，用来交易会出错（记录 skipped，不挡住之后的运行）
-    local_now = now.astimezone(tz)
-    if local_now.time() < settings.market_close_cutoff:
-        msg = (f"现在是马来西亚时间 {local_now:%H:%M}，还没收市"
+    if before_close_cutoff(settings, now):
+        msg = (f"现在是{settings.timezone_label} {local_now(settings, now):%H:%M}，还没收市"
                f"（{settings.market_close_cutoff:%H:%M} 后才运行），这次不交易")
-        notifier.send(format_preclose(msg))
+        notifier.send(format_preclose(settings, msg))
         return RunOutcome("skipped", msg, 0)
 
-    # 状态一致性检查：现金不能是负数、持仓 / 挂单必须整手
-    acct = db.ensure_account(settings.initial_cash)
-    safety.check_capital(acct, settings.initial_cash)
+    # 状态一致性检查：本金和设定一致、现金不能是负数、持仓 / 挂单必须整手
+    acct = db.ensure_account(settings.initial_cash, settings.currency)
+    safety.check_capital(acct, settings.initial_cash, settings.market)
     safety.check_state(acct, db.get_positions(), db.get_pending_orders(), settings.lot_size)
 
     # 3. 抓数据（含重试）
@@ -119,14 +122,15 @@ def run_once(
     )
     for reason in list(report.suspicious.values()) + report.warnings:
         notifier.send(format_alert(
-            "数据可疑", reason, "该股今天跳过（不交易、不执行挂单）；请到财经网站核对价格"
+            "数据可疑", reason, "该股今天跳过（不交易、不执行挂单）；请到财经网站核对价格",
+            settings.market,
         ))
 
     # 5. 交易日检查：最新数据的日期不是今天 → 休市
     latest = max(df.index[-1] for df in data.values())
     if latest != today:
         msg = f"今天休市，没有新数据（最新数据日期 {latest}）"
-        notifier.send(format_holiday())
+        notifier.send(format_holiday(settings))
         return RunOutcome("skipped", msg, 0)
 
     notes: list[str] = []
@@ -169,8 +173,8 @@ def run_once(
             continue
         if stop_loss_triggered(pos, closes[t], settings.risk.stop_loss_pct):
             reason = (
-                f"止损：收盘 RM {closes[t]:.2f} 跌破买入价 RM {pos.avg_price:.2f} 的 "
-                f"{settings.risk.stop_loss_pct:.0%}"
+                f"止损：收盘 {price(settings, closes[t])} 跌破买入价 "
+                f"{price(settings, pos.avg_price)} 的 {settings.risk.stop_loss_pct:.0%}"
             )
             new_orders.append(db.add_pending_order(PendingOrder(
                 t, "SELL", pos.quantity, reason, today, closes[t])))
@@ -225,7 +229,7 @@ def run_once(
     # 11. 每日总结（就算没有交易也一定发）
     first_bench = prev_snaps[0].benchmark_close if prev_snaps else bench_close
     for o in new_orders:
-        notes.append(f"新挂单（明天开盘执行）：{o.side} {o.quantity} × {o.ticker}｜{o.reason}")
+        notes.append(f"新挂单（下一个交易日开盘执行）：{o.side} {o.quantity} × {o.ticker}｜{o.reason}")
     summary = DailySummary(
         run_date=str(today),
         total_value=total_value,
@@ -239,8 +243,8 @@ def run_once(
         notes=notes,
     )
     for t in exec_res.trades:
-        notifier.send(format_trade(t))
-    notifier.send(format_summary(summary))
+        notifier.send(format_trade(settings, t))
+    notifier.send(format_summary(settings, summary))
     return RunOutcome(
         "success", f"完成：成交 {len(exec_res.trades)} 笔，新挂单 {len(new_orders)} 笔", 0,
         trades=exec_res.trades, new_orders=new_orders,
@@ -251,7 +255,7 @@ def run_once(
 
 
 SUGGESTIONS = {
-    dfetch.DataFetchError: "检查 settings.yaml 的 ticker 是否正确；" + dfetch.YFINANCE_HINT,
+    dfetch.DataFetchError: "检查 config/markets.yaml 的 ticker 是否正确；" + dfetch.YFINANCE_HINT,
     dfetch.StaleDataError: dfetch.YFINANCE_HINT,
     dfetch.DataValidationError: "今天不交易，下一个交易日会自动再试；若连续出现请检查 yfinance 数据",
 }
@@ -272,64 +276,71 @@ def execute(
     sleep: Callable[[float], None] = time.sleep,
     last_run_path: Optional[Path] = None,
 ) -> RunOutcome:
-    """最外层 try/except：任何异常 → 不交易、发警报、记录 failed、非零退出码。"""
-    tz = ZoneInfo(settings.timezone)
-    now = now or datetime.now(tz)
-    started = datetime.now(tz)
-    run_date = now.astimezone(tz).date()
+    """最外层 try/except：任何异常 → 该市场不交易、发警报、记录 failed、非零退出码。"""
+    now = now or datetime.now(timezone.utc)
+    started = datetime.now(timezone.utc)
+    run_date = local_today(settings, now)
+    mk = settings.market
+
+    def alert(error_type: str, detail: str, suggestion: str) -> None:
+        notifier.send(format_alert(error_type, detail, suggestion, mk))
+
     try:
         outcome = run_once(settings, db, notifier, now, downloader, sleep)
     except HaltTrading as e:
-        notifier.send(format_alert(e.error_type, e.detail, e.suggestion))
+        alert(e.error_type, e.detail, e.suggestion)
         outcome = RunOutcome("failed", str(e), 1)
     except DatabaseUnavailableError as e:
-        notifier.send(format_alert("数据库连不上，今天不交易", str(e),
-                                   "到 Supabase Dashboard 打开项目，如果显示 Paused 就点 Resume，之后手动 Run workflow"))
+        alert("数据库连不上，今天不交易", str(e),
+              "到 Supabase Dashboard 打开项目，如果显示 Paused 就点 Resume，之后手动 Run workflow")
         outcome = RunOutcome("failed", f"{type(e).__name__}: {e}", 1)
     except DatabaseError as e:
-        notifier.send(format_alert("数据库错误，今天不交易", str(e),
-                                   "检查 SUPABASE_URL / SUPABASE_SERVICE_KEY 是否正确，以及 schema.sql 是否已执行"))
+        alert("数据库错误，今天不交易", str(e),
+              "检查 SUPABASE_URL / SUPABASE_SERVICE_KEY 是否正确，以及 sql/ 里的 SQL 是否都已执行")
         outcome = RunOutcome("failed", f"{type(e).__name__}: {e}", 1)
     except safety.StateError as e:
-        notifier.send(format_alert("账户状态不一致，今天不交易", str(e),
-                                   "到 Supabase Table Editor 检查 account / positions / pending_orders，修正后再手动运行"))
+        alert("账户状态不一致，今天不交易", str(e),
+              f"到 Supabase Table Editor 检查 {mk} 的 accounts / positions / pending_orders，修正后再手动运行")
         outcome = RunOutcome("failed", f"{type(e).__name__}: {e}", 1)
     except dfetch.DataError as e:
         suggestion = next(
             (s for cls, s in SUGGESTIONS.items() if isinstance(e, cls)), dfetch.YFINANCE_HINT
         )
-        notifier.send(format_alert(f"数据问题（{type(e).__name__}），今天不交易", str(e), suggestion))
+        alert(f"数据问题（{type(e).__name__}），今天不交易", str(e), suggestion)
         outcome = RunOutcome("failed", f"{type(e).__name__}: {e}", 1)
     except Exception as e:  # noqa: BLE001 - 最外层，必须全部接住
-        notifier.send(format_alert(
-            f"未预期的错误（{type(e).__name__}），今天不交易",
-            short_traceback(e),
-            "到 GitHub Actions 查看完整 log；修好前 bot 不会交易",
-        ))
+        alert(f"未预期的错误（{type(e).__name__}），今天不交易", short_traceback(e),
+              "到 GitHub Actions 查看完整 log；修好前 bot 不会交易")
         outcome = RunOutcome("failed", f"{type(e).__name__}: {e}", 1)
 
     try:
         db.record_run(BotRun(run_date, outcome.status, outcome.message[:1000],
-                             started, datetime.now(tz)))
+                             started, datetime.now(timezone.utc)))
     except Exception as e:  # noqa: BLE001
         log.error("写入 bot_runs 失败：%s", e)
-        notifier.send(format_alert("写入运行记录失败", str(e), "检查数据库连线"))
+        alert("写入运行记录失败", str(e), "检查数据库连线")
         outcome.exit_code = 1
 
     if last_run_path is not None and outcome.status != "failed":
-        write_last_run(last_run_path, run_date, outcome)
+        write_last_run(last_run_path, mk, run_date, outcome)
     return outcome
 
 
-def write_last_run(path: Path, run_date, outcome: RunOutcome) -> None:
+def write_last_run(path: Path, market: str, run_date, outcome: RunOutcome) -> None:
+    """logs/last_run.json：按市场分开记录，只更新本市场那一段，其他市场原样保留。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "project": PROJECT_NAME,
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        existing = {}
+    markets = existing.get("markets") if isinstance(existing.get("markets"), dict) else {}
+    markets[market] = {
         "run_date": str(run_date),
         "status": outcome.status,
         "message": outcome.message,
-        "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds"),
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    payload = {"project": PROJECT_NAME, "markets": dict(sorted(markets.items()))}
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
@@ -345,9 +356,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     parser = argparse.ArgumentParser(prog="python -m bot.main", description=f"{PROJECT_NAME} 模拟交易 bot")
+    parser.add_argument("--market", required=True,
+                        help="要运行的市场代码（config/markets.yaml 里的，例如 MY、US）")
     parser.add_argument("--dry-run", action="store_true",
                         help="抓真实股价，但不写数据库、不发讯息（用内存数据库）")
     args = parser.parse_args(argv)
+    market = args.market.strip().upper()
 
     safety.install_log_redaction()
 
@@ -359,16 +373,21 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     console = ConsoleNotifier(prefix="[通知]" if not args.dry_run else "[DRY-RUN 通知]")
     try:
-        settings = load_settings()
+        settings = load_market(market)
     except ConfigError as e:
-        _emergency_alert(console, format_alert("配置错误", str(e), "修正 config/settings.yaml"))
+        try:
+            known = ", ".join(available_markets())
+        except ConfigError:
+            known = "?"
+        _emergency_alert(console, format_alert(
+            "配置错误，今天不交易", str(e), f"修正 config/markets.yaml（可用市场：{known}）", market))
         return 1
 
     if args.dry_run:
         from bot.db import InMemoryDB
 
-        print(f"=== {PROJECT_NAME} DRY-RUN：模拟交易｜虚拟资金｜不写数据库、不发讯息 ===\n")
-        outcome = execute(settings, InMemoryDB(settings.initial_cash), console)
+        print(f"=== {PROJECT_NAME} [{market}] DRY-RUN：模拟交易｜虚拟资金｜不写数据库、不发讯息 ===\n")
+        outcome = execute(settings, InMemoryDB(settings.initial_cash, market), console)
         print(f"=== 结果：{outcome.status} — {outcome.message} ===")
         return outcome.exit_code
 
@@ -377,15 +396,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         env = check_env()
     except MissingEnvError as e:
         _emergency_alert(console, format_alert(
-            "缺少环境变量，今天不交易", str(e), "在 .env（本地）或 GitHub Secrets（云端）补上这些变量"))
+            "缺少环境变量，今天不交易", str(e), "在 .env（本地）或 GitHub Secrets（云端）补上这些变量",
+            market))
         return 1
 
     from bot.db import SupabaseDB
     from bot.notifier import TelegramNotifier
 
-    print(f"=== {PROJECT_NAME}：模拟交易｜虚拟资金 ===")
+    print(f"=== {PROJECT_NAME} [{market}]：模拟交易｜虚拟资金 ===")
     notifier = TelegramNotifier(env["TELEGRAM_BOT_TOKEN"], env["TELEGRAM_CHAT_ID"])
-    db = SupabaseDB(env["SUPABASE_URL"], env["SUPABASE_SERVICE_KEY"])
+    db = SupabaseDB(env["SUPABASE_URL"], env["SUPABASE_SERVICE_KEY"], market=market)
     outcome = execute(settings, db, notifier, last_run_path=LAST_RUN_PATH)
     print(f"=== 结果：{outcome.status} — {safety.redact(outcome.message)} ===")
     return outcome.exit_code

@@ -65,7 +65,7 @@ def test_supabase_headers_legacy_jwt():
 
 
 def test_supabase_connection_error_means_paused():
-    db = SupabaseDB("https://abc.supabase.co", FAKE_KEY,
+    db = SupabaseDB("https://abc.supabase.co", FAKE_KEY, market="MY",
                     session=FakeSession(exc=requests.ConnectionError("dns fail")))
     with pytest.raises(DatabaseUnavailableError, match="Resume"):
         db.get_positions()
@@ -78,29 +78,75 @@ def test_supabase_5xx_means_unavailable():
 
 
 def test_supabase_401_hint_without_key():
-    db = SupabaseDB("https://abc.supabase.co", FAKE_KEY,
+    db = SupabaseDB("https://abc.supabase.co", FAKE_KEY, market="MY",
                     session=FakeSession([FakeResp(401, {"message": "Invalid API key"})]))
     with pytest.raises(DatabaseError) as ei:
         db.get_positions()
     assert "anon" in str(ei.value) and FAKE_KEY not in str(ei.value)
 
 
-def test_supabase_execute_buy_calls_rpc():
-    trade_row = {"id": 7, "trade_date": "2026-11-24", "ticker": "1155.KL", "side": "BUY",
-                 "quantity": 100, "price": 10.0, "fees": 9.3, "reason": "x"}
+def test_supabase_execute_buy_calls_rpc_with_market():
+    trade_row = {"id": 7, "market": "MY", "trade_date": "2026-11-24", "ticker": "1155.KL",
+                 "side": "BUY", "quantity": 100, "price": 10.0, "fees": 9.3, "reason": "x"}
     s = FakeSession([FakeResp(200, trade_row)])
-    db = SupabaseDB("https://abc.supabase.co", FAKE_KEY, session=s)
+    db = SupabaseDB("https://abc.supabase.co", FAKE_KEY, market="MY", session=s)
     t = db.execute_buy("1155.KL", 100, 10.0, 9.3, date(2026, 11, 24), "x", order_id=3)
     method, url, kw = s.calls[0]
     assert method == "POST" and url.endswith("/rest/v1/rpc/execute_buy")
-    assert kw["json"]["p_order_id"] == 3 and t.id == 7 and t.quantity == 100
+    assert kw["json"]["p_order_id"] == 3 and kw["json"]["p_market"] == "MY"
+    assert t.id == 7 and t.quantity == 100
 
 
-def test_supabase_ensure_account_creates_once():
+def test_supabase_rejects_trade_row_from_other_market():
+    row = {"id": 7, "market": "US", "trade_date": "2026-11-24", "ticker": "F", "side": "BUY",
+           "quantity": 1, "price": 10.0, "fees": 1.0, "reason": "x"}
+    db = SupabaseDB("https://abc.supabase.co", FAKE_KEY, market="MY",
+                    session=FakeSession([FakeResp(200, [row])]))
+    with pytest.raises(DatabaseError, match="市场"):
+        db.get_trades()
+
+
+def test_supabase_without_market_refuses_reads_and_writes():
+    db = SupabaseDB("https://abc.supabase.co", FAKE_KEY, session=FakeSession())
+    with pytest.raises(DatabaseError, match="market"):
+        db.get_positions()
+    assert db.ping() is True   # 保活不需要市场
+
+
+def test_supabase_every_query_filters_by_market():
+    s = FakeSession()
+    db = SupabaseDB("https://abc.supabase.co", FAKE_KEY, market="US", session=s)
+    db.get_positions(); db.get_trades(); db.get_pending_orders(); db.get_snapshots()
+    db.has_successful_run(date(2026, 11, 24))
+    for method, url, kw in s.calls:
+        assert kw["params"]["market"] == "eq.US", url
+
+
+def test_supabase_writes_carry_market():
+    from bot.models import BotRun, DailySnapshot
+    s = FakeSession([FakeResp(201, [{"id": 1, "ticker": "F", "side": "BUY", "quantity": 1,
+                                     "reason": "", "signal_date": "2026-11-24",
+                                     "signal_price": 12.0}])])
+    db = SupabaseDB("https://abc.supabase.co", FAKE_KEY, market="US", session=s)
+    db.add_pending_order(PendingOrder("F", "BUY", 1, "", date(2026, 11, 24), 12.0))
+    db.save_snapshot(DailySnapshot(date(2026, 11, 24), 200, 200, 0, 6000))
+    now = datetime(2026, 11, 24, tzinfo=ZoneInfo("UTC"))
+    db.record_run(BotRun(date(2026, 11, 24), "success", "ok", now, now))
+    posted = [kw for m, url, kw in s.calls]
+    assert posted[0]["json"]["market"] == "US"
+    assert posted[1]["json"]["market"] == "US"
+    assert posted[1]["params"] == {"on_conflict": "market,snapshot_date"}
+    assert posted[2]["json"]["p_market"] == "US"
+
+
+def test_supabase_ensure_account_creates_once_for_market():
     s = FakeSession([FakeResp(200, []), FakeResp(201, None),
-                     FakeResp(200, [{"cash": 10000, "initial_cash": 10000, "updated_at": None}])])
-    acct = SupabaseDB("https://abc.supabase.co", FAKE_KEY, session=s).ensure_account(10000)
-    assert acct.cash == 10000 and s.calls[1][0] == "POST"
+                     FakeResp(200, [{"cash": 200, "initial_cash": 200, "updated_at": None}])])
+    acct = SupabaseDB("https://abc.supabase.co", FAKE_KEY, market="US",
+                      session=s).ensure_account(200, "USD")
+    assert acct.cash == 200 and s.calls[1][0] == "POST"
+    assert s.calls[1][2]["json"] == {"market": "US", "currency": "USD", "cash": 200,
+                                     "initial_cash": 200}
 
 
 # ------------------------------------------------------------ Telegram
@@ -250,8 +296,9 @@ def test_latest_prices_saved_on_trading_day(small_settings):
 
 def test_supabase_save_latest_prices_upserts():
     s = FakeSession([FakeResp(201, None)])
-    SupabaseDB("https://abc.supabase.co", FAKE_KEY, session=s).save_latest_prices(
+    SupabaseDB("https://abc.supabase.co", FAKE_KEY, market="MY", session=s).save_latest_prices(
         {"1155.KL": 10.14}, date(2026, 11, 24))
     method, url, kw = s.calls[0]
-    assert url.endswith("/latest_prices") and kw["params"] == {"on_conflict": "ticker"}
+    assert url.endswith("/latest_prices") and kw["params"] == {"on_conflict": "market,ticker"}
+    assert kw["json"][0]["market"] == "MY"
     assert kw["json"][0]["ticker"] == "1155.KL" and kw["json"][0]["price_date"] == "2026-11-24"

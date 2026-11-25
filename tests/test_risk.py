@@ -8,6 +8,7 @@ from bot.models import Position
 from bot.risk import (
     RiskViolation,
     buy_cost,
+    cash_reserve,
     max_buy_quantity,
     stop_loss_triggered,
     validate_buy,
@@ -96,10 +97,17 @@ def test_max_buy_quantity_targets_20pct(settings):
 
 
 def test_max_buy_quantity_limited_by_cash(settings):
-    qty = max_buy_quantity("X.KL", 1.0, 1000, 100000, {}, settings.risk, settings.fees, 100)
-    # 可用 RM500（扣保留额），还要扣费用 → 400 股（RM400 + RM8.52 费用）
+    qty = max_buy_quantity("X.KL", 1.0, 1000, 10000, {}, settings.risk, settings.fees, 100)
+    # 保留额 = 总资产 10000 × 5% = 500 → 可用 500，还要扣费用 → 400 股（400 + 8.52 费用）
     assert qty == 400
-    assert 1000 - buy_cost(qty, 1.0, settings.fees) >= settings.risk.min_cash_reserve
+    assert 1000 - buy_cost(qty, 1.0, settings.fees) >= cash_reserve(10000, settings.risk)
+
+
+def test_cash_reserve_is_pct_of_total_assets(settings):
+    assert cash_reserve(10000, settings.risk) == 500
+    assert cash_reserve(200, settings.risk) == 10
+    # 总资产变大 → 保留额跟着变大：同样现金 1000，总资产 20000 时保留 1000 → 买不了
+    assert max_buy_quantity("X.KL", 1.0, 1000, 20000, {}, settings.risk, settings.fees, 100) == 0
 
 
 def test_max_buy_quantity_zero_when_unaffordable(settings):

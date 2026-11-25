@@ -3,9 +3,12 @@
 - InMemoryDB：本地 / --dry-run / 测试用，不写任何真实数据库。
 - SupabaseDB：正式运行用，通过 Supabase 的 REST API（PostgREST）读写。
 
-两者提供相同的方法。买入 / 卖出用 execute_buy / execute_sell 完成：
+两者提供相同的方法，而且每个实例只属于一个市场（market）：
+所有读写都只碰该市场的数据，一个市场的现金不能拿去买另一个市场的股票。
+
+买入 / 卖出用 execute_buy / execute_sell 完成：
 “改现金、改持仓、写交易记录、删除挂单”是同一个 transaction，
-Supabase 那边由 sql/schema.sql 里的 PostgreSQL 函数保证一起成功或一起失败。
+Supabase 那边由数据库里的 PostgreSQL 函数保证一起成功或一起失败（见 sql/）。
 
 密钥只从参数传入（来自环境变量），任何错误讯息都不会包含密钥。
 """
@@ -14,6 +17,7 @@ from __future__ import annotations
 import copy
 import logging
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Iterator, Optional
 
@@ -35,35 +39,70 @@ class DatabaseUnavailableError(DatabaseError):
 # ====================================================================== 内存版
 
 
+@dataclass
+class _MarketState:
+    account: Account
+    positions: dict = field(default_factory=dict)
+    trades: list = field(default_factory=list)
+    pending_orders: list = field(default_factory=list)
+    snapshots: list = field(default_factory=list)
+    runs: dict = field(default_factory=dict)
+    latest_prices: dict = field(default_factory=dict)
+
+
+class InMemoryStore:
+    """内存版的“整个数据库”：每个市场一份独立的数据；id 在所有市场之间共用（像数据库的 identity）。"""
+
+    def __init__(self):
+        self.markets: dict[str, _MarketState] = {}
+        self.next_id = 1
+
+
 class InMemoryDB:
-    def __init__(self, initial_cash: float):
-        self.account = Account(cash=round(initial_cash, 2), initial_cash=initial_cash)
-        self.positions: dict[str, Position] = {}
-        self.trades: list[Trade] = []
-        self.pending_orders: list[PendingOrder] = []
-        self.snapshots: list[DailySnapshot] = []
-        self.runs: dict[date, BotRun] = {}
-        self._next_id = 1
+    """某一个市场在 InMemoryStore 里的视图。多个市场可以共用同一个 store（测试隔离用）。"""
+
+    def __init__(self, initial_cash: float, market: str = "MY",
+                 store: Optional[InMemoryStore] = None):
+        self.market = market
+        self.store = store or InMemoryStore()
+        if market not in self.store.markets:
+            self.store.markets[market] = _MarketState(
+                Account(cash=round(initial_cash, 2), initial_cash=initial_cash))
+
+    # 该市场的数据（属性名称和以前一样，测试可以直接看）
+    @property
+    def _s(self) -> _MarketState:
+        return self.store.markets[self.market]
+
+    account = property(lambda self: self._s.account,
+                       lambda self, v: setattr(self._s, "account", v))
+    positions = property(lambda self: self._s.positions,
+                         lambda self, v: setattr(self._s, "positions", v))
+    trades = property(lambda self: self._s.trades,
+                      lambda self, v: setattr(self._s, "trades", v))
+    pending_orders = property(lambda self: self._s.pending_orders,
+                              lambda self, v: setattr(self._s, "pending_orders", v))
+    snapshots = property(lambda self: self._s.snapshots,
+                         lambda self, v: setattr(self._s, "snapshots", v))
+    runs = property(lambda self: self._s.runs)
+    latest_prices = property(lambda self: self._s.latest_prices)
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
-        backup = copy.deepcopy(
-            (self.account, self.positions, self.trades, self.pending_orders, self._next_id)
-        )
+        backup = copy.deepcopy((self._s, self.store.next_id))
         try:
             yield
         except BaseException:
-            (self.account, self.positions, self.trades, self.pending_orders,
-             self._next_id) = backup
+            self.store.markets[self.market], self.store.next_id = backup
             raise
 
     def _new_id(self) -> int:
-        i = self._next_id
-        self._next_id += 1
+        i = self.store.next_id
+        self.store.next_id += 1
         return i
 
     # ---------------------------------------------------------- account
-    def ensure_account(self, initial_cash: float) -> Account:
+    def ensure_account(self, initial_cash: float, currency: str = "") -> Account:
         return self.get_account()
 
     def get_account(self) -> Account:
@@ -156,8 +195,6 @@ class InMemoryDB:
 
     # ---------------------------------------------------------- latest prices
     def save_latest_prices(self, prices: dict[str, float], price_date: date) -> None:
-        if not hasattr(self, "latest_prices"):
-            self.latest_prices: dict[str, tuple[float, date]] = {}
         for t, p in prices.items():
             self.latest_prices[t] = (p, price_date)
 
@@ -167,7 +204,7 @@ class InMemoryDB:
         return r is not None and r.status == "success"
 
     def record_run(self, run: BotRun) -> None:
-        """同一天只有一笔（run_date UNIQUE）；已成功的不覆盖，failed / skipped 会被覆盖。"""
+        """同一市场同一天只有一笔（(market, run_date) UNIQUE）；已成功的不覆盖，failed / skipped 会被覆盖。"""
         if self.has_successful_run(run.run_date):
             return
         self.runs[run.run_date] = copy.copy(run)
@@ -184,11 +221,16 @@ def _d(value: Any) -> date:
 
 
 class SupabaseDB:
-    """通过 PostgREST（https://<project>.supabase.co/rest/v1）读写。"""
+    """通过 PostgREST（https://<project>.supabase.co/rest/v1）读写某一个市场的数据。
 
-    def __init__(self, url: str, service_key: str, session=None, timeout: float = 20.0):
+    market=None 只能用来 ping（保活）；其他方法都必须先指定市场。
+    """
+
+    def __init__(self, url: str, service_key: str, market: Optional[str] = None,
+                 session=None, timeout: float = 20.0):
         import requests
 
+        self.market = market
         self.base = url.rstrip("/") + "/rest/v1"
         self.timeout = timeout
         self.session = session or requests.Session()
@@ -196,6 +238,16 @@ class SupabaseDB:
         if not service_key.startswith("sb_"):  # 旧版 JWT key 还要放 Authorization
             headers["Authorization"] = f"Bearer {service_key}"
         self.session.headers.update(headers)
+
+    @property
+    def _m(self) -> str:
+        if not self.market:
+            raise DatabaseError("没有指定市场（market），拒绝读写")
+        return self.market
+
+    def _where(self, **params) -> dict:
+        """所有查询都加上 market=eq.<市场>。"""
+        return {"market": f"eq.{self._m}", **params}
 
     # ---------------------------------------------------------- HTTP
     def _request(self, method: str, path: str, *, params=None, json=None,
@@ -220,29 +272,32 @@ class SupabaseDB:
         return resp.json()
 
     def _rpc(self, fn: str, args: dict) -> Any:
-        return self._request("POST", f"rpc/{fn}", json=args)
+        return self._request("POST", f"rpc/{fn}", json={**args, "p_market": self._m})
 
     # ---------------------------------------------------------- account
-    def ensure_account(self, initial_cash: float) -> Account:
-        """第一次运行时建立账户（现金 = initial_cash）；之后直接读取。"""
-        rows = self._request("GET", "account", params={"id": "eq.1", "select": "*"})
+    def ensure_account(self, initial_cash: float, currency: str = "") -> Account:
+        """该市场第一次运行时建立账户（现金 = initial_cash）；之后直接读取。"""
+        rows = self._request("GET", "accounts", params=self._where(select="market"))
         if not rows:
-            self._request("POST", "account", prefer="return=minimal",
-                          json={"id": 1, "cash": initial_cash, "initial_cash": initial_cash})
-            log.info("已建立账户，初始资金 RM %.2f", initial_cash)
+            if not currency:
+                raise DatabaseError(f"建立 {self._m} 账户需要货币代码")
+            self._request("POST", "accounts", prefer="return=minimal",
+                          json={"market": self._m, "currency": currency,
+                                "cash": initial_cash, "initial_cash": initial_cash})
+            log.info("已建立 %s 账户，初始资金 %s %.2f", self._m, currency, initial_cash)
         return self.get_account()
 
     def get_account(self) -> Account:
-        rows = self._request("GET", "account", params={"id": "eq.1", "select": "*"})
+        rows = self._request("GET", "accounts", params=self._where(select="*"))
         if not rows:
-            raise DatabaseError("account 表没有资料")
+            raise DatabaseError(f"accounts 表没有 {self._m} 的账户")
         r = rows[0]
         return Account(float(r["cash"]), float(r["initial_cash"]),
                        datetime.fromisoformat(r["updated_at"]) if r.get("updated_at") else None)
 
     # ---------------------------------------------------------- positions
     def get_positions(self) -> dict[str, Position]:
-        rows = self._request("GET", "positions", params={"select": "*", "order": "ticker"})
+        rows = self._request("GET", "positions", params=self._where(select="*", order="ticker"))
         return {
             r["ticker"]: Position(r["ticker"], int(r["quantity"]), float(r["avg_price"]),
                                   _d(r["buy_date"]))
@@ -256,6 +311,8 @@ class SupabaseDB:
                 "p_reason": reason, "p_order_id": order_id}
 
     def _to_trade(self, r: dict) -> Trade:
+        if r.get("market") not in (None, self._m):
+            raise DatabaseError(f"交易记录的市场 {r.get('market')} 和 {self._m} 不一致")
         return Trade(_d(r["trade_date"]), r["ticker"], r["side"], int(r["quantity"]),
                      float(r["price"]), float(r["fees"]), r["reason"], r["id"])
 
@@ -270,7 +327,7 @@ class SupabaseDB:
         return self._to_trade(r)
 
     def get_trades(self) -> list[Trade]:
-        rows = self._request("GET", "trades", params={"select": "*", "order": "id"})
+        rows = self._request("GET", "trades", params=self._where(select="*", order="id"))
         return [self._to_trade(r) for r in rows or []]
 
     # ---------------------------------------------------------- pending orders
@@ -279,36 +336,38 @@ class SupabaseDB:
                             _d(r["signal_date"]), float(r["signal_price"]), r["id"])
 
     def get_pending_orders(self) -> list[PendingOrder]:
-        rows = self._request("GET", "pending_orders", params={"select": "*", "order": "id"})
+        rows = self._request("GET", "pending_orders", params=self._where(select="*", order="id"))
         return [self._to_order(r) for r in rows or []]
 
     def add_pending_order(self, order: PendingOrder) -> PendingOrder:
         rows = self._request("POST", "pending_orders", prefer="return=representation", json={
-            "ticker": order.ticker, "side": order.side, "quantity": order.quantity,
-            "reason": order.reason, "signal_date": str(order.signal_date),
-            "signal_price": order.signal_price,
+            "market": self._m, "ticker": order.ticker, "side": order.side,
+            "quantity": order.quantity, "reason": order.reason,
+            "signal_date": str(order.signal_date), "signal_price": order.signal_price,
         })
         return self._to_order(rows[0])
 
     def delete_pending_order(self, order_id: int) -> None:
-        rows = self._request("DELETE", "pending_orders", params={"id": f"eq.{order_id}"},
+        rows = self._request("DELETE", "pending_orders",
+                             params=self._where(id=f"eq.{order_id}"),
                              prefer="return=representation")
         if not rows:
-            raise DatabaseError(f"pending order {order_id} not found")
+            raise DatabaseError(f"pending order {order_id} not found in market {self._m}")
 
     # ---------------------------------------------------------- snapshots
     def save_snapshot(self, snap: DailySnapshot) -> None:
         self._request(
-            "POST", "daily_snapshots", params={"on_conflict": "snapshot_date"},
+            "POST", "daily_snapshots", params={"on_conflict": "market,snapshot_date"},
             prefer="resolution=merge-duplicates,return=minimal",
-            json={"snapshot_date": str(snap.snapshot_date), "total_value": snap.total_value,
-                  "cash": snap.cash, "positions_value": snap.positions_value,
+            json={"market": self._m, "snapshot_date": str(snap.snapshot_date),
+                  "total_value": snap.total_value, "cash": snap.cash,
+                  "positions_value": snap.positions_value,
                   "benchmark_close": snap.benchmark_close},
         )
 
     def get_snapshots(self) -> list[DailySnapshot]:
         rows = self._request("GET", "daily_snapshots",
-                             params={"select": "*", "order": "snapshot_date"})
+                             params=self._where(select="*", order="snapshot_date"))
         return [
             DailySnapshot(_d(r["snapshot_date"]), float(r["total_value"]), float(r["cash"]),
                           float(r["positions_value"]), float(r["benchmark_close"]))
@@ -320,17 +379,17 @@ class SupabaseDB:
         if not prices:
             return
         self._request(
-            "POST", "latest_prices", params={"on_conflict": "ticker"},
+            "POST", "latest_prices", params={"on_conflict": "market,ticker"},
             prefer="resolution=merge-duplicates,return=minimal",
-            json=[{"ticker": t, "close": p, "price_date": str(price_date),
+            json=[{"market": self._m, "ticker": t, "close": p, "price_date": str(price_date),
                    "updated_at": datetime.now().astimezone().isoformat()}
                   for t, p in prices.items()],
         )
 
     # ---------------------------------------------------------- bot runs
     def has_successful_run(self, run_date: date) -> bool:
-        rows = self._request("GET", "bot_runs", params={
-            "select": "id", "run_date": f"eq.{run_date}", "status": "eq.success"})
+        rows = self._request("GET", "bot_runs", params=self._where(
+            select="id", run_date=f"eq.{run_date}", status="eq.success"))
         return bool(rows)
 
     def record_run(self, run: BotRun) -> None:
@@ -342,6 +401,6 @@ class SupabaseDB:
         })
 
     def ping(self) -> bool:
-        """简单查询（保活 / 检查连线）。"""
+        """简单查询（保活 / 检查连线）。不需要指定市场。"""
         self._request("GET", "bot_runs", params={"select": "id", "limit": "1"})
         return True

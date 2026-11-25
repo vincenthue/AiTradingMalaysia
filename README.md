@@ -4,7 +4,7 @@
 
 - 策略：50MA / 200MA 交叉（只在交叉当天产生信号），用收盘价判断，**下一个交易日开盘价**成交
 - 风控：100 股一手、保留 RM 100 现金、单只最多 50%、最多 5 只、不做空、8% 止损
-- 观察名单：8 只 RM 3 以下、成交活跃的股票（见 `config/settings.yaml`，顺序 = 买入优先顺序）
+- 观察名单：8 只 RM 3 以下、成交活跃的股票（见 `config/markets.yaml`，顺序 = 买入优先顺序）
 - 费用：佣金 max(0.1%, RM 8)、清算费 0.03%、印花税（每 RM 1000 收 RM 1，上限 RM 1000）
 - 每个交易日 **18:30 MYT** 由 GitHub Actions 自动运行；结果写进 Supabase、发 Telegram，Dashboard 在 Vercel
 - 原则：**宁可不交易，也不要错误交易**。数据或状态有问题时就停止交易、发警报、退出
@@ -63,7 +63,7 @@ repo 是 public 的，每次 push 都会跑 gitleaks 扫描密钥。
 py -3.13 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 .venv\Scripts\python -m pytest -q
-.venv\Scripts\python -m bot.main --dry-run
+.venv\Scripts\python -m bot.main --market MY --dry-run
 ```
 
 - `--dry-run`：抓真实股价，但用内存数据库、只把讯息印在终端，**不写数据库、不发 Telegram**。
@@ -173,12 +173,12 @@ bot 会发 ⚠️ 警报并**不交易**，这是设计好的保护。常见原�
 | 现象 | 原因 / 处理 |
 |---|---|
 | 📅 今天休市，没有新数据 | 马股公共假期，正常，不用处理 |
-| 某只股票 empty / no data | ticker 写错（要带 `.KL`，例如 `1155.KL`），或已下市；修改 `config/settings.yaml` 的 `watchlist` |
+| 某只股票 empty / no data | ticker 写错（要带 `.KL`，例如 `1155.KL`），或已下市；修改 `config/markets.yaml` 的 `watchlist` |
 | 全部股票都失败 | Yahoo Finance 暂时故障或限流；等几小时后 **Run workflow** 重跑 |
 | 数据过期（stale） | Yahoo 还没更新收盘价；稍后重跑 |
 | 单日涨跌超过 30% 被标记可疑 | 可能是数据错误或除权，该股票当天不交易；其他股票照常 |
 
-若长期失败，可以先在本地跑 `.venv\Scripts\python -m bot.main --dry-run` 看详细错误，或升级 yfinance：
+若长期失败，可以先在本地跑 `.venv\Scripts\python -m bot.main --market MY --dry-run` 看详细错误，或升级 yfinance：
 `.venv\Scripts\python -m pip install -U yfinance`，测试通过后更新 `requirements.txt`。
 
 ---
@@ -187,7 +187,7 @@ bot 会发 ⚠️ 警报并**不交易**，这是设计好的保护。常见原�
 
 ```
 bot/            交易逻辑（config、data_fetcher、strategy、risk、broker、db、notifier、safety、main）
-config/         settings.yaml（策略、风控、费用、观察名单）
+config/         markets.yaml（每个市场的观察名单、费用、风控；defaults 共用）
 sql/schema.sql  Supabase 表、RLS、交易函数
 scripts/        keepalive.py
 tests/          pytest

@@ -21,13 +21,13 @@ class StateError(Exception):
     """账户状态不一致，停止交易。"""
 
 
-def check_capital(account: Account, configured: float) -> None:
-    """settings.yaml 的本金必须和数据库账户一致（防止改了设定档却忘了改数据库）。"""
+def check_capital(account: Account, configured: float, market: str = "") -> None:
+    """markets.yaml 的本金必须和数据库账户一致（防止改了设定档却忘了改数据库）。"""
     if abs(account.initial_cash - configured) > 0.005:
         raise StateError(
-            f"settings.yaml 的 initial_cash 是 RM {configured:,.2f}，"
-            f"但数据库账户的 initial_cash 是 RM {account.initial_cash:,.2f}。"
-            "请把两边改成一致（数据库：Supabase SQL Editor 更新 account 表）"
+            f"markets.yaml 的 {market} initial_cash 是 {configured:,.2f}，"
+            f"但数据库 {market} 账户的 initial_cash 是 {account.initial_cash:,.2f}。"
+            "请把两边改成一致（数据库：Supabase SQL Editor 更新 accounts 表）"
         )
 
 

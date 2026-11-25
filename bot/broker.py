@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from bot.config import Settings
+from bot.market import price as fmt_price
 from bot.models import PendingOrder, Position, Trade
 from bot.risk import (  # noqa: F401 - calculate_fees / Fees 从这里对外提供
     Fees,
@@ -101,10 +102,10 @@ class SimBroker:
             )
             qty = min(o.quantity, allowed)
             if qty <= 0:
-                self._cancel(o, f"按开盘价 RM {price:.2f} 重新检查风控后买不了（现金或仓位上限）", res)
+                self._cancel(o, f"按开盘价 {fmt_price(self.st, price)} 重新检查风控后买不了（现金或仓位上限）", res)
                 continue
             if qty < o.quantity:
-                res.reduced.append((o, qty, f"开盘价 RM {price:.2f}，由 {o.quantity} 股减为 {qty} 股"))
+                res.reduced.append((o, qty, f"开盘价 {fmt_price(self.st, price)}，由 {o.quantity} 股减为 {qty} 股"))
             res.trades.append(self.buy(o.ticker, qty, price, trade_date, o.reason, o.id))
         return res
 

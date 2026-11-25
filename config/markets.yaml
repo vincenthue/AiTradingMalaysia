@@ -1,0 +1,53 @@
+# AiTradingMalaysia 多市场配置（不含任何密钥；密钥只从环境变量读取）
+#
+# 每个市场一个区块；strategy / risk / data 先用下面 defaults 的值，
+# 市场自己的区块里写了同名项目就覆盖（只覆盖写到的那几项）。
+#
+# 改 initial_cash 时，也要同步改 Supabase 的 accounts 表，否则 bot 会停止交易并警报。
+
+markets:
+  MY:
+    name: Bursa Malaysia
+    flag: "🇲🇾"
+    timezone: Asia/Kuala_Lumpur
+    timezone_label: 马来西亚时间
+    market_close_cutoff: "17:30"  # 当地时间这之前运行 → 不交易（避免把盘中价格当收盘价）
+    currency: MYR
+    currency_symbol: "RM"
+    initial_cash: 1000
+    benchmark: "^KLSE"            # FBM KLCI
+    lot_size: 100                 # Bursa 每手 100 股，只能整手买卖
+    watchlist:                    # 按顺序 = 买入优先顺序；RM 1,000 本金 → 选 RM 3 以下、成交活跃的股票
+      - 0166.KL   # Inari
+      - 4197.KL   # Sime Darby
+      - 3336.KL   # IJM
+      - 7113.KL   # Top Glove
+      - 6888.KL   # Axiata
+      - 7277.KL   # Dialog
+      - 3182.KL   # Genting
+      - 5296.KL   # MR DIY
+    fees:                         # 近似值，可调整；运行前请核对实际费率
+      brokerage_pct: 0.001
+      brokerage_min: 8.0
+      clearing_pct: 0.0003
+      stamp_duty_per_1000: 1.0    # 按比例计算（RM 2,350 → RM 2.35）
+      stamp_duty_max: 1000
+    risk:                         # 覆盖 defaults（小本金：单只可到 50%，保留 10% 现金）
+      max_position_pct: 0.50
+      min_cash_reserve_pct: 0.10
+
+defaults:
+  strategy:
+    name: ma_crossover
+    short_window: 50
+    long_window: 200
+  risk:
+    max_position_pct: 0.20        # 单只股票最多占该市场总资产 20%
+    max_positions: 5
+    stop_loss_pct: 0.08           # 从买入价跌 8% 就止损卖出
+    min_cash_reserve_pct: 0.05    # 买入后现金至少保留总资产的 5%
+  data:                           # 数据抓取与验证（PROJECT_SPEC 第 7.1 节）
+    history_period: 2y            # 抓取多久的历史数据（需 > long_window 个交易日）
+    retry_delays_seconds: [5, 15, 45]   # 失败后重试 3 次，指数退避
+    max_daily_move_pct: 0.30      # 单日涨跌超过 30% 视为可疑
+    max_stale_days: 5             # 最新数据超过 5 天视为过期

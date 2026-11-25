@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from bot.config import load_settings
+from bot.config import load_market
 
 
 @pytest.fixture(autouse=True)
@@ -28,19 +28,19 @@ def _no_network_no_dotenv(monkeypatch):
 
 @pytest.fixture
 def real_settings():
-    """真实的 config/settings.yaml（只用来检查设定档本身）。"""
-    return load_settings()
+    """真实的 config/markets.yaml 的 MY 市场（只用来检查设定档本身）。"""
+    return load_market("MY")
 
 
 @pytest.fixture
 def settings(real_settings):
-    """测试用固定参数：不随 settings.yaml 改本金 / 风控 / 观察名单而变。"""
+    """测试用固定参数（MY 市场）：不随 markets.yaml 改本金 / 风控 / 观察名单而变。"""
     return replace(
         real_settings,
         initial_cash=10000.0,
         watchlist=("1155.KL", "1295.KL", "1023.KL", "5347.KL", "6888.KL"),
         risk=replace(real_settings.risk, max_position_pct=0.20, max_positions=5,
-                     stop_loss_pct=0.08, min_cash_reserve=500.0),
+                     stop_loss_pct=0.08, min_cash_reserve_pct=0.05),
     )
 
 
