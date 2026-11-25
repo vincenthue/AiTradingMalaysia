@@ -205,7 +205,7 @@ def test_state_sell_order_without_position():
 
 
 def test_capital_mismatch_halts_and_alerts(small_settings):
-    """settings.yaml 本金和数据库不一致 → 不交易、发警报。"""
+    """markets.yaml 本金和数据库不一致 → 不交易、发警报。"""
     db, n = InMemoryDB(5000), Quiet()   # 数据库是 5000，设定档是 10000
     r = execute(small_settings, db, n, now=at(TUE), downloader=market(small_settings, TUE),
                 sleep=no_sleep)
@@ -302,3 +302,24 @@ def test_supabase_save_latest_prices_upserts():
     assert url.endswith("/latest_prices") and kw["params"] == {"on_conflict": "market,ticker"}
     assert kw["json"][0]["market"] == "MY"
     assert kw["json"][0]["ticker"] == "1155.KL" and kw["json"][0]["price_date"] == "2026-11-24"
+
+
+def test_supabase_reads_more_than_1000_rows_in_pages():
+    """Supabase 每次最多回传 1000 行：超过的要分批读完（例如 4 年以上的每日快照）。"""
+    snap = lambda i: {"snapshot_date": f"2020-01-01", "total_value": 1000 + i, "cash": 1000,
+                      "positions_value": 0, "benchmark_close": 1500}
+    s = FakeSession([FakeResp(200, [snap(i) for i in range(1000)]),
+                     FakeResp(200, [snap(i) for i in range(1000, 1005)])])
+    db = SupabaseDB("https://abc.supabase.co", FAKE_KEY, market="MY", session=s)
+    snaps = db.get_snapshots()
+    assert len(snaps) == 1005 and snaps[-1].total_value == 2004   # 最新的也拿到了
+    offsets = [kw["params"]["offset"] for _, _, kw in s.calls]
+    assert offsets == ["0", "1000"]
+    assert all(kw["params"]["market"] == "eq.MY" and kw["params"]["limit"] == "1000"
+               for _, _, kw in s.calls)
+
+
+def test_supabase_single_page_makes_one_request():
+    s = FakeSession([FakeResp(200, [])])
+    SupabaseDB("https://abc.supabase.co", FAKE_KEY, market="US", session=s).get_trades()
+    assert len(s.calls) == 1

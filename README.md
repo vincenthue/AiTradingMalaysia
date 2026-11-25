@@ -279,6 +279,7 @@ bot 会发 ⚠️ `[AiTradingMalaysia][MY]`（或 `[US]`）警报，**该市场�
 | 现象 | 原因 / 处理 |
 |---|---|
 | 📅 今天休市，没有新数据 | 该市场公共假期（按该市场自己的日期判断），正常，不用处理 |
+| 马股**平常交易日**却收到 📅，或 18:30 收到「价格是 NaN / 空值」⚠️ | Yahoo 有时 18:30 还没更新完当天的马股收盘数据。当天不会交易（安全），晚一点（例如 20:00 后）到 **Actions → Trading Bot MY → Run workflow** 补跑即可：跳过 / 失败的日子可以重跑，不会重复交易 |
 | 某只股票 empty / no data | ticker 写错（马股要带 `.KL`，例如 `7113.KL`；美股不用后缀），或已下市；修改 `config/markets.yaml` 的 `watchlist` |
 | 全部股票都失败 | Yahoo Finance 暂时故障或限流；等几小时后 **Run workflow** 重跑 |
 | 数据过期（stale） | Yahoo 还没更新收盘价，或 yfinance 坏了；稍后重跑，持续发生就升级 yfinance |

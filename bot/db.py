@@ -274,6 +274,18 @@ class SupabaseDB:
     def _rpc(self, fn: str, args: dict) -> Any:
         return self._request("POST", f"rpc/{fn}", json={**args, "p_market": self._m})
 
+    PAGE_SIZE = 1000   # Supabase 每次查询最多回传 1000 行
+
+    def _get_all(self, path: str, params: dict) -> list:
+        """分批读取（每批 PAGE_SIZE 行）直到读完，避免超过 1000 行时只拿到前 1000 行。"""
+        rows: list = []
+        while True:
+            page = self._request("GET", path, params={**params, "limit": str(self.PAGE_SIZE),
+                                                      "offset": str(len(rows))}) or []
+            rows.extend(page)
+            if len(page) < self.PAGE_SIZE:
+                return rows
+
     # ---------------------------------------------------------- account
     def ensure_account(self, initial_cash: float, currency: str = "") -> Account:
         """该市场第一次运行时建立账户（现金 = initial_cash）；之后直接读取。"""
@@ -297,7 +309,7 @@ class SupabaseDB:
 
     # ---------------------------------------------------------- positions
     def get_positions(self) -> dict[str, Position]:
-        rows = self._request("GET", "positions", params=self._where(select="*", order="ticker"))
+        rows = self._get_all("positions", self._where(select="*", order="ticker"))
         return {
             r["ticker"]: Position(r["ticker"], int(r["quantity"]), float(r["avg_price"]),
                                   _d(r["buy_date"]))
@@ -327,7 +339,7 @@ class SupabaseDB:
         return self._to_trade(r)
 
     def get_trades(self) -> list[Trade]:
-        rows = self._request("GET", "trades", params=self._where(select="*", order="id"))
+        rows = self._get_all("trades", self._where(select="*", order="id"))
         return [self._to_trade(r) for r in rows or []]
 
     # ---------------------------------------------------------- pending orders
@@ -336,7 +348,7 @@ class SupabaseDB:
                             _d(r["signal_date"]), float(r["signal_price"]), r["id"])
 
     def get_pending_orders(self) -> list[PendingOrder]:
-        rows = self._request("GET", "pending_orders", params=self._where(select="*", order="id"))
+        rows = self._get_all("pending_orders", self._where(select="*", order="id"))
         return [self._to_order(r) for r in rows or []]
 
     def add_pending_order(self, order: PendingOrder) -> PendingOrder:
@@ -366,8 +378,7 @@ class SupabaseDB:
         )
 
     def get_snapshots(self) -> list[DailySnapshot]:
-        rows = self._request("GET", "daily_snapshots",
-                             params=self._where(select="*", order="snapshot_date"))
+        rows = self._get_all("daily_snapshots", self._where(select="*", order="snapshot_date"))
         return [
             DailySnapshot(_d(r["snapshot_date"]), float(r["total_value"]), float(r["cash"]),
                           float(r["positions_value"]), float(r["benchmark_close"]))
