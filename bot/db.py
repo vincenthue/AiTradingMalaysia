@@ -203,6 +203,10 @@ class InMemoryDB:
         r = self.runs.get(run_date)
         return r is not None and r.status == "success"
 
+    def get_run(self, run_date: date) -> Optional[BotRun]:
+        r = self.runs.get(run_date)
+        return copy.copy(r) if r else None
+
     def record_run(self, run: BotRun) -> None:
         """同一市场同一天只有一笔（(market, run_date) UNIQUE）；已成功的不覆盖，failed / skipped 会被覆盖。"""
         if self.has_successful_run(run.run_date):
@@ -402,6 +406,17 @@ class SupabaseDB:
         rows = self._request("GET", "bot_runs", params=self._where(
             select="id", run_date=f"eq.{run_date}", status="eq.success"))
         return bool(rows)
+
+    def get_run(self, run_date: date) -> Optional[BotRun]:
+        """该市场某一天的运行记录（没有就 None）。"""
+        rows = self._request("GET", "bot_runs", params=self._where(
+            select="run_date,status,message,started_at,finished_at", run_date=f"eq.{run_date}"))
+        if not rows:
+            return None
+        r = rows[0]
+        return BotRun(_d(r["run_date"]), r["status"], r["message"],
+                      datetime.fromisoformat(r["started_at"]),
+                      datetime.fromisoformat(r["finished_at"]) if r.get("finished_at") else None)
 
     def record_run(self, run: BotRun) -> None:
         self._rpc("record_run", {

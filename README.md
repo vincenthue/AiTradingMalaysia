@@ -4,8 +4,8 @@
 
 | 市场 | 虚拟本金 | 指数 | 每手 | 自动运行（马来西亚时间） |
 |---|---|---|---|---|
-| 🇲🇾 马股 MY（Bursa Malaysia） | RM 1,000 | FBM KLCI `^KLSE` | 100 股 | 周一至五 18:30 |
-| 🇺🇸 美股 US | USD 200 | S&P 500 `^GSPC` | 1 股 | 周二至六 06:30（= 纽约前一天收市后） |
+| 🇲🇾 马股 MY（Bursa Malaysia） | RM 1,000 | FBM KLCI `^KLSE` | 100 股 | 周一至五 18:37（后备 19:47、21:17） |
+| 🇺🇸 美股 US | USD 200 | S&P 500 `^GSPC` | 1 股 | 周二至六 06:37（后备 07:47、09:17；= 纽约前一天收市后） |
 
 - 每个市场**完全独立**：自己的账户、时区、"今天"、运行记录；一个市场出错不影响另一个；一个市场的现金不能买另一个市场的股票
 - 策略：50MA / 200MA 交叉（只在交叉当天产生信号），用收盘价判断，**下一个交易日开盘价**成交
@@ -140,10 +140,15 @@ git push -u origin main
 
 | Workflow | 什么时候跑（cron 是 UTC） | 做什么 |
 |---|---|---|
-| **Trading Bot MY** | `30 10 * * 1-5` = 马来西亚 18:30（Bursa 17:00 收市后） | `python -m bot.main --market MY` |
-| **Trading Bot US** | `30 22 * * 1-5` = 纽约收市后（冬令时 17:30、夏令时 18:30），马来西亚隔天 06:30 | `python -m bot.main --market US` |
+| **Trading Bot MY** | `37 10`、`47 11`、`17 13 * * 1-5` = 马来西亚 18:37 / 19:47 / 21:17（Bursa 17:00 收市后） | `python -m bot.main --market MY` |
+| **Trading Bot US** | `37 22`、`47 23 * * 1-5`、`17 1 * * 2-6` = 纽约收市后，马来西亚隔天 06:37 / 07:47 / 09:17 | `python -m bot.main --market US` |
 | **Tests** | 每次 push / PR | pytest + gitleaks 密钥扫描 |
 | **Keepalive** | 每周日 10:00 MYT | ping Supabase 防止暂停，重新启用两个交易 workflow |
+
+**为什么一天排三次**：GitHub 的定时任务不保证准时（忙的时候会延迟、甚至跳过一次）。所以每个市场排一次主要时间 + 两次后备。
+后备运行（以及主要那次）用 `--quiet-repeat`：该市场今天已经成功 → 安静跳过（不发讯息、不重复交易）；
+主要那次失败或数据还没更新 → 后备会自动再试；休市通知每天只发一次。手动 **Run workflow** 不加这个参数，重跑时照常发 ⏭️。
+如果某天到了最后一次后备时间还没收到 📊，就是三次都没被 GitHub 启动，手动 **Run workflow** 补跑即可。
 
 两个交易 workflow 各自有 `concurrency`（`trading-bot-MY`、`trading-bot-US`）：同一市场同时只能有一个在跑，两个市场可以同时跑。
 运行成功后会 commit `logs/last_run.json`（按市场分段记录），保持 repo 活跃。
@@ -230,7 +235,7 @@ npm --prefix dashboard run dev
    如果新市场有一种全新的费用，才需要在 `bot/fees.py` 的 `FEE_COMPONENTS` 加一个项目。
 
 2. 复制 `.github/workflows/trading-bot-my.yml` 为 `trading-bot-sg.yml`，改三个地方：
-   `name: Trading Bot SG`、`cron`（换算成该市场收市后的 UTC 时间）、`group: trading-bot-SG`、`MARKET: SG`。
+   `name: Trading Bot SG`、三个 `cron`（换算成该市场收市后的 UTC 时间：一次主要 + 两次后备）、`group: trading-bot-SG`、`MARKET: SG`。
    再把 `trading-bot-sg.yml` 加进 `keepalive.yml` 的重新启用清单。
 
 然后：
@@ -279,7 +284,7 @@ bot 会发 ⚠️ `[AiTradingMalaysia][MY]`（或 `[US]`）警报，**该市场�
 | 现象 | 原因 / 处理 |
 |---|---|
 | 📅 今天休市，没有新数据 | 该市场公共假期（按该市场自己的日期判断），正常，不用处理 |
-| 马股**平常交易日**却收到 📅，或 18:30 收到「价格是 NaN / 空值」⚠️ | Yahoo 有时 18:30 还没更新完当天的马股收盘数据。当天不会交易（安全），晚一点（例如 20:00 后）到 **Actions → Trading Bot MY → Run workflow** 补跑即可：跳过 / 失败的日子可以重跑，不会重复交易 |
+| 马股**平常交易日**却收到 📅，或傍晚收到「价格是 NaN / 空值」⚠️ | Yahoo 有时收市后一段时间才更新完当天的马股收盘数据。当天先不交易（安全）；19:47 和 21:17 的后备运行会自动再试。到 21:17 之后还是没有 📊，就到 **Actions → Trading Bot MY → Run workflow** 补跑 |
 | 某只股票 empty / no data | ticker 写错（马股要带 `.KL`，例如 `7113.KL`；美股不用后缀），或已下市；修改 `config/markets.yaml` 的 `watchlist` |
 | 全部股票都失败 | Yahoo Finance 暂时故障或限流；等几小时后 **Run workflow** 重跑 |
 | 数据过期（stale） | Yahoo 还没更新收盘价，或 yfinance 坏了；稍后重跑，持续发生就升级 yfinance |

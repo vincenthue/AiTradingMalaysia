@@ -255,3 +255,78 @@ def test_negative_cash_alert_has_no_currency_symbol(us_settings):
     with pytest.raises(StateError) as ei:
         check_state(Account(-5, 200), {}, [], 1)
     assert "RM" not in str(ei.value)
+
+
+# ------------------------------------------------------------ 定时后备运行（--quiet-repeat）
+
+
+def test_backup_run_after_success_is_silent_and_keeps_records(small_settings, tmp_path):
+    import json
+    db, n = InMemoryDB(small_settings.initial_cash, "MY"), Quiet()
+    p = tmp_path / "last_run.json"
+    dl = market(small_settings, TUE)
+    execute(small_settings, db, n, now=my_close_run(TUE), downloader=dl, sleep=no_sleep, last_run_path=p)
+    first = p.read_text(encoding="utf-8")
+    sent_before = len(n.sent)
+    r = execute(small_settings, db, n, now=my_close_run(TUE), downloader=dl, sleep=no_sleep,
+                last_run_path=p, quiet_repeat=True)
+    assert r.status == "skipped" and r.already_done and r.exit_code == 0
+    assert len(n.sent) == sent_before                      # 不发 ⏭️
+    assert db.runs[TUE].status == "success"                # 成功记录不动
+    assert p.read_text(encoding="utf-8") == first          # last_run.json 不被改成 skipped
+    assert json.loads(first)["markets"]["MY"]["status"] == "success"
+
+
+def test_manual_rerun_still_sends_skip_note(small_settings):
+    db, n = InMemoryDB(small_settings.initial_cash, "MY"), Quiet()
+    dl = market(small_settings, TUE)
+    execute(small_settings, db, n, now=my_close_run(TUE), downloader=dl, sleep=no_sleep)
+    execute(small_settings, db, n, now=my_close_run(TUE), downloader=dl, sleep=no_sleep)
+    assert n.sent[-1].startswith("⏭️ 🇲🇾 [MY]")
+
+
+def test_backup_run_retries_when_data_was_late(small_settings):
+    """18:37 时 Yahoo 还没有今天的数据（看起来像休市）→ 后备运行拿到数据就正常完成。"""
+    db, n = InMemoryDB(small_settings.initial_cash, "MY"), Quiet()
+    r1 = execute(small_settings, db, n, now=my_close_run(TUE), downloader=market(small_settings, MON),
+                 sleep=no_sleep)
+    assert r1.status == "skipped" and n.sent[-1].startswith("📅")
+    r2 = execute(small_settings, db, n, now=my_close_run(TUE), downloader=market(small_settings, TUE),
+                 sleep=no_sleep, quiet_repeat=True)
+    assert r2.status == "success" and n.sent[-1].startswith("📊 🇲🇾 [MY]")
+    assert db.runs[TUE].status == "success" and len(db.get_snapshots()) == 1
+
+
+def test_backup_run_retries_after_failure(small_settings):
+    db, n = InMemoryDB(small_settings.initial_cash, "MY"), Quiet()
+
+    def broken(ticker, period):
+        raise RuntimeError("Yahoo 暂时坏掉")
+
+    r1 = execute(small_settings, db, n, now=my_close_run(TUE), downloader=broken, sleep=no_sleep)
+    assert r1.status == "failed"
+    r2 = execute(small_settings, db, n, now=my_close_run(TUE), downloader=market(small_settings, TUE),
+                 sleep=no_sleep, quiet_repeat=True)
+    assert r2.status == "success" and db.runs[TUE].status == "success"
+
+
+def test_holiday_notice_sent_once_per_day(small_settings):
+    db, n = InMemoryDB(small_settings.initial_cash, "MY"), Quiet()
+    holiday = market(small_settings, MON)                  # 今天（TUE）没有新数据
+    for quiet in (False, True, True):
+        execute(small_settings, db, n, now=my_close_run(TUE), downloader=holiday, sleep=no_sleep,
+                quiet_repeat=quiet)
+    assert sum(m.startswith("📅") for m in n.sent) == 1
+    assert db.runs[TUE].status == "skipped"
+
+
+def test_supabase_get_run():
+    from tests.test_phase2 import FAKE_KEY, FakeResp, FakeSession
+    from bot.db import SupabaseDB
+    row = {"run_date": "2026-11-24", "status": "skipped", "message": "今天休市，没有新数据",
+           "started_at": "2026-11-24T10:37:00+00:00", "finished_at": None}
+    s = FakeSession([FakeResp(200, [row]), FakeResp(200, [])])
+    db = SupabaseDB("https://abc.supabase.co", FAKE_KEY, market="MY", session=s)
+    assert db.get_run(TUE).message.startswith("今天休市")
+    assert db.get_run(WED) is None
+    assert s.calls[0][2]["params"]["market"] == "eq.MY"

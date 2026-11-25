@@ -72,6 +72,10 @@ class RunOutcome:
     exit_code: int
     trades: list = field(default_factory=list)
     new_orders: list = field(default_factory=list)
+    already_done: bool = False   # 今天已经成功过：不再写运行记录 / last_run.json
+
+
+HOLIDAY_PREFIX = "今天休市"
 
 
 # ====================================================================== 流程
@@ -84,17 +88,23 @@ def run_once(
     now: datetime,
     downloader: dfetch.Downloader = dfetch.yfinance_downloader,
     sleep: Callable[[float], None] = time.sleep,
+    quiet_repeat: bool = False,
 ) -> RunOutcome:
-    """跑一次完整流程。数据 / 风控问题抛 HaltTrading 或 DataError，由 execute() 统一处理。"""
+    """跑一次完整流程。数据 / 风控问题抛 HaltTrading 或 DataError，由 execute() 统一处理。
+
+    quiet_repeat：定时的后备运行用。今天已经成功 → 安静跳过（不发 ⏭️）；
+    今天已经发过休市通知 → 不再重复发 📅。警报（⚠️）照常发。
+    """
     # 2. 用该市场自己的时区算“今天”（不能用服务器时间 / 马来西亚时间去算别的市场）
     today = local_today(settings, now)
 
-    # 3. 幂等检查（该市场今天已 success → 跳过，只写 log + 发简短通知）
+    # 3. 幂等检查（该市场今天已 success → 跳过，只写 log；手动重跑才发简短通知）
     if safety.already_succeeded(db, today):
         msg = f"{settings.market} {today} 已经成功跑过，这次跳过（不会重复交易）"
         log.info(msg)
-        notifier.send(format_rerun_skip(settings, today))
-        return RunOutcome("skipped", msg, 0)
+        if not quiet_repeat:
+            notifier.send(format_rerun_skip(settings, today))
+        return RunOutcome("skipped", msg, 0, already_done=True)
 
     # 收市前不运行：盘中价格不是收盘价，用来交易会出错（记录 skipped，不挡住之后的运行）
     if before_close_cutoff(settings, now):
@@ -129,8 +139,12 @@ def run_once(
     # 5. 交易日检查：最新数据的日期不是今天 → 休市
     latest = max(df.index[-1] for df in data.values())
     if latest != today:
-        msg = f"今天休市，没有新数据（最新数据日期 {latest}）"
-        notifier.send(format_holiday(settings))
+        msg = f"{HOLIDAY_PREFIX}，没有新数据（最新数据日期 {latest}）"
+        earlier = db.get_run(today) if quiet_repeat else None
+        if earlier and earlier.message.startswith(HOLIDAY_PREFIX):
+            log.info("今天已经发过休市通知，这次不重复发")
+        else:
+            notifier.send(format_holiday(settings))
         return RunOutcome("skipped", msg, 0)
 
     notes: list[str] = []
@@ -275,6 +289,7 @@ def execute(
     downloader: dfetch.Downloader = dfetch.yfinance_downloader,
     sleep: Callable[[float], None] = time.sleep,
     last_run_path: Optional[Path] = None,
+    quiet_repeat: bool = False,
 ) -> RunOutcome:
     """最外层 try/except：任何异常 → 该市场不交易、发警报、记录 failed、非零退出码。"""
     now = now or datetime.now(timezone.utc)
@@ -286,7 +301,7 @@ def execute(
         notifier.send(format_alert(error_type, detail, suggestion, mk))
 
     try:
-        outcome = run_once(settings, db, notifier, now, downloader, sleep)
+        outcome = run_once(settings, db, notifier, now, downloader, sleep, quiet_repeat)
     except HaltTrading as e:
         alert(e.error_type, e.detail, e.suggestion)
         outcome = RunOutcome("failed", str(e), 1)
@@ -312,6 +327,9 @@ def execute(
         alert(f"未预期的错误（{type(e).__name__}），今天不交易", short_traceback(e),
               "到 GitHub Actions 查看完整 log；修好前 bot 不会交易")
         outcome = RunOutcome("failed", f"{type(e).__name__}: {e}", 1)
+
+    if outcome.already_done:   # 今天的成功记录和 last_run.json 保持原样
+        return outcome
 
     try:
         db.record_run(BotRun(run_date, outcome.status, outcome.message[:1000],
@@ -360,6 +378,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="要运行的市场代码（config/markets.yaml 里的，例如 MY、US）")
     parser.add_argument("--dry-run", action="store_true",
                         help="抓真实股价，但不写数据库、不发讯息（用内存数据库）")
+    parser.add_argument("--quiet-repeat", action="store_true",
+                        help="定时后备运行：今天已经成功就安静跳过，休市通知每天只发一次")
     args = parser.parse_args(argv)
     market = args.market.strip().upper()
 
@@ -406,7 +426,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"=== {PROJECT_NAME} [{market}]：模拟交易｜虚拟资金 ===")
     notifier = TelegramNotifier(env["TELEGRAM_BOT_TOKEN"], env["TELEGRAM_CHAT_ID"])
     db = SupabaseDB(env["SUPABASE_URL"], env["SUPABASE_SERVICE_KEY"], market=market)
-    outcome = execute(settings, db, notifier, last_run_path=LAST_RUN_PATH)
+    outcome = execute(settings, db, notifier, last_run_path=LAST_RUN_PATH,
+                      quiet_repeat=args.quiet_repeat)
     print(f"=== 结果：{outcome.status} — {safety.redact(outcome.message)} ===")
     return outcome.exit_code
 

@@ -3,8 +3,12 @@ name: Trading Bot MY
 
 on:
   schedule:
-    # Bursa 17:00 收市；马来西亚时间 18:30（UTC 10:30），周一到周五
-    - cron: "30 10 * * 1-5"
+    # Bursa 17:00 收市。GitHub 的定时不保证准时（可能延迟或跳过），所以排三次：
+    # 主要 18:37、后备 19:47、21:17（马来西亚时间）；已经成功的日子后备会安静跳过，不会重复交易。
+    # 分钟避开 :00 / :30（最多人排程、最容易被延迟）。cron 是 UTC，周一到周五。
+    - cron: "37 10 * * 1-5"
+    - cron: "47 11 * * 1-5"
+    - cron: "17 13 * * 1-5"
   workflow_dispatch: {}          # 可以在 Actions 页面手动 Run workflow
 
 # 同一市场同时只能有一个在跑（新触发的会排队）；和 US 互不影响，可以同时跑
@@ -39,7 +43,10 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -m bot.main --market "$MARKET"
+          # 定时运行（主要 + 后备）用 --quiet-repeat：今天已经成功就安静跳过、休市通知只发一次；
+          # 手动 Run workflow 不加，重跑时照常发 ⏭️ 让你知道
+          EXTRA_ARGS: ${{ github.event_name == 'schedule' && '--quiet-repeat' || '' }}
+        run: python -m bot.main --market "$MARKET" $EXTRA_ARGS
 
       # bot 成功或跳过时才会到这一步（失败会以非零状态结束，GitHub 会寄 email）。
       # 两个市场的 workflow 可能同时 push：每次重试都先拿最新的 main，
