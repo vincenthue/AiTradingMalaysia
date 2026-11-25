@@ -72,6 +72,10 @@ def format_holiday() -> str:
     return f"📅 [{PROJECT_NAME}] 今天休市，没有新数据"
 
 
+def format_preclose(detail: str) -> str:
+    return f"⏰ [{PROJECT_NAME}] {detail}"
+
+
 def format_rerun_skip(run_date) -> str:
     return f"⏭️ [{PROJECT_NAME}] {run_date} 今天已经跑过，这次跳过（不会重复交易）"
 

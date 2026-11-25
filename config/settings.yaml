@@ -1,6 +1,7 @@
 # AiTradingMalaysia 配置（不含任何密钥；密钥只从环境变量读取）
 initial_cash: 10000          # RM
 timezone: Asia/Kuala_Lumpur
+market_close_cutoff: "17:30" # 马来西亚时间这之前运行 → 不交易（避免把盘中价格当收盘价）
 benchmark: "^KLSE"           # FBM KLCI 指数，用来比较收益
 
 watchlist:                   # 先用几只大型蓝筹股（已用 yfinance 验证可抓取）

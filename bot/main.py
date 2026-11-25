@@ -38,6 +38,7 @@ from bot.notifier import (
     DailySummary,
     format_alert,
     format_holiday,
+    format_preclose,
     format_rerun_skip,
     format_summary,
     format_trade,
@@ -89,6 +90,14 @@ def run_once(
         msg = f"{today} 已经成功跑过，这次跳过（不会重复交易）"
         log.info(msg)
         notifier.send(format_rerun_skip(today))
+        return RunOutcome("skipped", msg, 0)
+
+    # 收市前不运行：盘中价格不是收盘价，用来交易会出错（记录 skipped，不挡住之后的运行）
+    local_now = now.astimezone(tz)
+    if local_now.time() < settings.market_close_cutoff:
+        msg = (f"现在是马来西亚时间 {local_now:%H:%M}，还没收市"
+               f"（{settings.market_close_cutoff:%H:%M} 后才运行），这次不交易")
+        notifier.send(format_preclose(msg))
         return RunOutcome("skipped", msg, 0)
 
     # 状态一致性检查：现金不能是负数、持仓 / 挂单必须整手

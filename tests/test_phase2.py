@@ -200,3 +200,31 @@ def test_failed_day_can_be_rerun(small_settings):
     r = execute(small_settings, db, Quiet(), now=at(TUE),
                 downloader=market(small_settings, TUE), sleep=no_sleep)
     assert r.status == "success" and db.runs[TUE].status == "success"
+
+
+# ------------------------------------------------------------ 收市前不运行
+
+
+def test_preclose_run_is_skipped_and_does_not_block_later(small_settings):
+    db, n = InMemoryDB(10000), Quiet()
+    myt = ZoneInfo("Asia/Kuala_Lumpur")
+    morning = datetime(2026, 11, 24, 10, 37, tzinfo=myt)
+    dl = market(small_settings, TUE)
+    r = execute(small_settings, db, n, now=morning, downloader=dl, sleep=no_sleep)
+    assert r.status == "skipped" and r.exit_code == 0
+    assert db.get_snapshots() == [] and db.get_trades() == []
+    assert n.sent[-1].startswith("⏰") and "10:37" in n.sent[-1]
+    # 同一天收市后再跑，正常完成
+    r2 = execute(small_settings, db, n, now=at(TUE), downloader=dl, sleep=no_sleep)
+    assert r2.status == "success" and len(db.get_snapshots()) == 1
+
+
+def test_cutoff_boundary(small_settings):
+    myt = ZoneInfo("Asia/Kuala_Lumpur")
+    dl = market(small_settings, TUE)
+    r = execute(small_settings, InMemoryDB(10000), Quiet(), downloader=dl, sleep=no_sleep,
+                now=datetime(2026, 11, 24, 17, 29, tzinfo=myt))
+    assert r.status == "skipped"
+    r = execute(small_settings, InMemoryDB(10000), Quiet(), downloader=dl, sleep=no_sleep,
+                now=datetime(2026, 11, 24, 17, 30, tzinfo=myt))
+    assert r.status == "success"

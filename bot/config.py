@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import time
 from pathlib import Path
 from typing import Mapping
 
@@ -71,6 +72,7 @@ class DataConfig:
 class Settings:
     initial_cash: float
     timezone: str
+    market_close_cutoff: time
     benchmark: str
     watchlist: tuple[str, ...]
     strategy: StrategyConfig
@@ -86,6 +88,14 @@ def _require(d: Mapping, key: str, where: str):
     return d[key]
 
 
+def _parse_hhmm(value) -> time:
+    try:
+        hh, mm = str(value).strip().split(":")
+        return time(int(hh), int(mm))
+    except (ValueError, TypeError):
+        raise ConfigError(f"market_close_cutoff 格式要是 \"HH:MM\"，现在是 {value!r}") from None
+
+
 def parse_settings(raw: Mapping) -> Settings:
     """把 YAML 内容转成 Settings，并做基本的合理性检查。"""
     s = _require(raw, "strategy", "")
@@ -97,6 +107,7 @@ def parse_settings(raw: Mapping) -> Settings:
     settings = Settings(
         initial_cash=float(_require(raw, "initial_cash", "")),
         timezone=str(_require(raw, "timezone", "")),
+        market_close_cutoff=_parse_hhmm(_require(raw, "market_close_cutoff", "")),
         benchmark=str(_require(raw, "benchmark", "")),
         watchlist=watchlist,
         strategy=StrategyConfig(
