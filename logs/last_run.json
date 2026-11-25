@@ -1,7 +1,11 @@
 {
   "project": "AiTradingMalaysia",
-  "run_date": "2026-11-25",
-  "status": "success",
-  "message": "完成：成交 0 笔，新挂单 0 笔",
-  "updated_at": "2026-11-25T02:37:58+00:00"
+  "markets": {
+    "MY": {
+      "run_date": "2026-11-25",
+      "status": "skipped",
+      "message": "现在是马来西亚时间 15:18，还没收市（17:30 后才运行），这次不交易",
+      "updated_at": "2026-11-25T07:18:32+00:00"
+    }
+  }
 }
