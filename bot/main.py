@@ -102,6 +102,7 @@ def run_once(
 
     # 状态一致性检查：现金不能是负数、持仓 / 挂单必须整手
     acct = db.ensure_account(settings.initial_cash)
+    safety.check_capital(acct, settings.initial_cash)
     safety.check_state(acct, db.get_positions(), db.get_pending_orders(), settings.lot_size)
 
     # 3. 抓数据（含重试）

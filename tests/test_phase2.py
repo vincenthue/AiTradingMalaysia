@@ -158,6 +158,16 @@ def test_state_sell_order_without_position():
         check_state(_acct(100), {}, [PendingOrder("X", "SELL", 100, "", TUE, 1.0)], 100)
 
 
+def test_capital_mismatch_halts_and_alerts(small_settings):
+    """settings.yaml 本金和数据库不一致 → 不交易、发警报。"""
+    db, n = InMemoryDB(5000), Quiet()   # 数据库是 5000，设定档是 10000
+    r = execute(small_settings, db, n, now=at(TUE), downloader=market(small_settings, TUE),
+                sleep=no_sleep)
+    assert r.status == "failed" and r.exit_code == 1
+    assert db.get_trades() == [] and db.get_snapshots() == []
+    assert any("initial_cash" in m for m in n.sent)
+
+
 def test_bad_state_halts_and_alerts(small_settings):
     db, n = InMemoryDB(10000), Quiet()
     db.set_cash(-5)

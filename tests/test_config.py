@@ -10,10 +10,14 @@ from bot.config import (
 )
 
 
-def test_load_settings(settings):
-    assert settings.initial_cash == 10000
+def test_load_settings(real_settings):
+    settings = real_settings
+    assert settings.initial_cash > 0
     assert settings.benchmark == "^KLSE"
-    assert settings.watchlist == ("1155.KL", "1295.KL", "1023.KL", "5347.KL", "6888.KL")
+    assert settings.watchlist and all(t.endswith(".KL") for t in settings.watchlist)
+    assert len(set(settings.watchlist)) == len(settings.watchlist)
+    assert 0 < settings.risk.max_position_pct <= 1
+    assert 0 <= settings.risk.min_cash_reserve < settings.initial_cash
     assert settings.strategy.short_window == 50 and settings.strategy.long_window == 200
     assert settings.lot_size == 100
     assert settings.data.retry_delays_seconds == (5, 15, 45)

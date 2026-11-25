@@ -30,7 +30,7 @@ const priceMap = computed(() =>
   Object.fromEntries((data.value?.prices ?? []).map((p) => [p.ticker, p])),
 )
 
-const initialCash = computed(() => Number(data.value?.account?.initial_cash ?? 10000))
+const initialCash = computed(() => Number(data.value?.account?.initial_cash ?? 1000))
 const cash = computed(() => Number(data.value?.account?.cash ?? 0))
 
 const positions = computed(() =>

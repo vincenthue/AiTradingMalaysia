@@ -1,15 +1,18 @@
 # AiTradingMalaysia 配置（不含任何密钥；密钥只从环境变量读取）
-initial_cash: 10000          # RM
+initial_cash: 1000           # RM（改了这里，也要同步改 Supabase 的 account 表，否则 bot 会停止交易并警报）
 timezone: Asia/Kuala_Lumpur
 market_close_cutoff: "17:30" # 马来西亚时间这之前运行 → 不交易（避免把盘中价格当收盘价）
 benchmark: "^KLSE"           # FBM KLCI 指数，用来比较收益
 
-watchlist:                   # 先用几只大型蓝筹股（已用 yfinance 验证可抓取）
-  - 1155.KL   # Maybank
-  - 1295.KL   # Public Bank
-  - 1023.KL   # CIMB
-  - 5347.KL   # Tenaga Nasional
+watchlist:                   # 按顺序 = 买入优先顺序；RM 1,000 本金 → 选 RM 3 以下、成交活跃的股票
+  - 0166.KL   # Inari
+  - 4197.KL   # Sime Darby
+  - 3336.KL   # IJM
+  - 7113.KL   # Top Glove
   - 6888.KL   # Axiata
+  - 7277.KL   # Dialog
+  - 3182.KL   # Genting
+  - 5296.KL   # MR DIY
 
 strategy:
   name: ma_crossover
@@ -17,10 +20,10 @@ strategy:
   long_window: 200
 
 risk:
-  max_position_pct: 0.20     # 单只股票最多占总资产 20%
+  max_position_pct: 0.50     # 单只股票最多占总资产 50%
   max_positions: 5
   stop_loss_pct: 0.08        # 从买入价跌 8% 就止损卖出
-  min_cash_reserve: 500      # 至少保留 RM 500 现金
+  min_cash_reserve: 100      # 至少保留 RM 100 现金
 
 fees:                        # 近似值，可调整；运行前请核对实际费率
   brokerage_pct: 0.001
