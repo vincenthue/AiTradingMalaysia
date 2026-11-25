@@ -61,7 +61,7 @@ def format_summary(st: Settings, s: DailySummary) -> str:
         lines.append(f"今日变化：{money(st, s.day_change, signed=True)}")
     lines.append(f"总收益率：{s.total_return:+.2%}")
     bench = "—" if s.benchmark_return is None else f"{s.benchmark_return:+.2%}"
-    lines.append(f"同期指数收益率：{bench}")
+    lines.append(f"同期指数收益率（{st.benchmark}）：{bench}")
     lines.append(f"现金：{money(st, s.cash)}")
     lines.append(f"持仓数：{s.positions_count}")
     if s.pending_count:

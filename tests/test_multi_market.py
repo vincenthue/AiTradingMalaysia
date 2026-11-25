@@ -227,3 +227,31 @@ def test_cli_unknown_market_alerts_and_exits(capsys):
     assert bot_main.main(["--market", "XX", "--dry-run"]) == 1
     out = capsys.readouterr().out
     assert "[XX]" in out and "MY" in out
+
+
+def test_every_us_message_is_tagged_and_has_no_ringgit(us_settings):
+    """美股所有讯息：开头有 🇺🇸 [US]（警报是 [AiTradingMalaysia][US]），不能出现 RM。"""
+    from bot.notifier import DailySummary, format_preclose, format_rerun_skip, format_summary
+    t = Trade(TUE, "F", "BUY", 8, 11.95, 1.0, "50MA 上穿 200MA")
+    s = DailySummary("2026-11-24", 199.0, -1.0, -0.005, 0.01, 103.4, 1, [t], 0, ["x"])
+    msgs = {
+        "trade": format_trade(us_settings, t),
+        "summary": format_summary(us_settings, s),
+        "holiday": format_holiday(us_settings),
+        "preclose": format_preclose(us_settings, "现在是纽约时间 11:00"),
+        "rerun": format_rerun_skip(us_settings, TUE),
+    }
+    for name, m in msgs.items():
+        assert "🇺🇸 [US]" in m.splitlines()[0], name
+        assert "RM" not in m, name
+    assert "同期指数收益率（^GSPC）" in msgs["summary"]
+    assert "今日变化：-$1.00" in msgs["summary"]
+    assert format_alert("x", "y", "z", "US").splitlines()[0] == "⚠️ [AiTradingMalaysia][US] x"
+
+
+def test_negative_cash_alert_has_no_currency_symbol(us_settings):
+    from bot.models import Account
+    from bot.safety import StateError, check_state
+    with pytest.raises(StateError) as ei:
+        check_state(Account(-5, 200), {}, [], 1)
+    assert "RM" not in str(ei.value)

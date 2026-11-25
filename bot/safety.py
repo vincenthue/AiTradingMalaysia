@@ -43,7 +43,7 @@ def check_state(
 ) -> None:
     problems: list[str] = []
     if account.cash < 0:
-        problems.append(f"现金是负数（RM {account.cash:,.2f}）")
+        problems.append(f"现金是负数（{account.cash:,.2f}）")
     if account.initial_cash <= 0:
         problems.append("初始资金 <= 0")
     for t, p in positions.items():
