@@ -67,7 +67,7 @@ py -3.13 -m venv .venv
 ```
 
 - `--dry-run`：抓真实股价，但用内存数据库、只把讯息印在终端，**不写数据库、不发 Telegram**。
-- 想在本地真正跑一次：复制 `.env.example` 为 `.env`，填入 4 个值，再执行 `.venv\Scripts\python -m bot.main`。
+- 想在本地真正跑一次：复制 `.env.example` 为 `.env`，填入 4 个值，再执行 `.venv\Scripts\python -m bot.main --market MY`。
   注意：17:30 MYT 之前运行会被记录为 skipped（避免用盘中价格交易）。
 
 ### 4. GitHub repo
