@@ -193,14 +193,28 @@ def test_last_run_json_written(env, tmp_path):
     execute(st, db, n, now=at(TUE), downloader=market(st, TUE), sleep=no_sleep, last_run_path=p)
     import json
     data = json.loads(p.read_text(encoding="utf-8"))
-    assert data["run_date"] == "2026-11-24" and data["status"] == "success"
+    my = data["markets"]["MY"]
+    assert my["run_date"] == "2026-11-24" and my["status"] == "success"
+
+
+def test_last_run_json_keeps_other_markets(env, tmp_path):
+    """两个市场共用 last_run.json：写 MY 不会覆盖 US 那一段。"""
+    import json
+    st, db, n = env
+    p = tmp_path / "last_run.json"
+    p.write_text(json.dumps({"project": "x", "markets": {"US": {"status": "success"}}}),
+                 encoding="utf-8")
+    execute(st, db, n, now=at(TUE), downloader=market(st, TUE), sleep=no_sleep, last_run_path=p)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["markets"]["US"] == {"status": "success"}
+    assert data["markets"]["MY"]["status"] == "success"
 
 
 def test_cli_non_dry_run_lists_missing_env_names_only(monkeypatch, capsys):
     for k in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:SECRET")
-    code = bot_main.main([])
+    code = bot_main.main(["--market", "MY"])
     out = capsys.readouterr().out
     assert code == 1
     assert "SUPABASE_URL" in out and "SECRET" not in out

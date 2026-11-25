@@ -1,8 +1,9 @@
 """通知讯息格式 + 发送。
 
-第 1 阶段：ConsoleNotifier（只印在终端，--dry-run 用）。
-第 2 阶段会加上 TelegramNotifier（重试 2 次，失败只写 log，不让程序崩溃）。
+- ConsoleNotifier：只印在终端（--dry-run 用）。
+- TelegramNotifier：重试 2 次，失败只写 log，不让程序崩溃。
 
+每则讯息开头都标明市场（例如 🇲🇾 [MY]），金额用该市场的货币符号（RM / $）。
 讯息里绝不能出现任何 token 或 key。
 """
 from __future__ import annotations
@@ -11,19 +12,25 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from bot.config import PROJECT_NAME
+from bot.config import PROJECT_NAME, Settings
+from bot.market import money, price, tag
 from bot.models import Trade
 from bot.safety import redact
 
 log = logging.getLogger(__name__)
 
 
-def format_trade(trade: Trade) -> str:
+def _trade_line(st: Settings, trade: Trade) -> str:
     icon = "🟢" if trade.side == "BUY" else "🔴"
     return (
-        f"{icon} {trade.side} {trade.quantity} × {trade.ticker} @ RM {trade.price:.2f}"
+        f"{icon} {trade.side} {trade.quantity} × {trade.ticker} @ {price(st, trade.price)}"
         f"｜原因：{trade.reason}"
     )
+
+
+def format_trade(st: Settings, trade: Trade) -> str:
+    """🇲🇾 [MY] 🟢 BUY 300 × 5347.KL @ RM 13.20｜原因：50MA 上穿 200MA"""
+    return f"{tag(st)} {_trade_line(st, trade)}"
 
 
 @dataclass
@@ -40,44 +47,47 @@ class DailySummary:
     notes: list[str]
 
 
-def format_summary(s: DailySummary) -> str:
-    lines = [f"📊 [{PROJECT_NAME}] {s.run_date} 每日总结（模拟交易｜虚拟资金）"]
+def format_summary(st: Settings, s: DailySummary) -> str:
+    lines = [f"📊 {tag(st)} {s.run_date} 每日总结（{st.name}｜模拟交易｜虚拟资金）"]
     if s.trades:
         lines.append("今日交易：")
-        lines += ["  " + format_trade(t) for t in s.trades]
+        lines += ["  " + _trade_line(st, t) for t in s.trades]
     else:
-        lines.append(f"今日无交易，总资产 RM {s.total_value:,.2f}")
-    lines.append(f"总资产：RM {s.total_value:,.2f}")
+        lines.append(f"今日无交易，总资产 {money(st, s.total_value)}")
+    lines.append(f"总资产：{money(st, s.total_value)}")
     if s.day_change is None:
         lines.append("今日变化：—（第一天）")
     else:
-        lines.append(f"今日变化：RM {s.day_change:+,.2f}")
+        lines.append(f"今日变化：{money(st, s.day_change, signed=True)}")
     lines.append(f"总收益率：{s.total_return:+.2%}")
     bench = "—" if s.benchmark_return is None else f"{s.benchmark_return:+.2%}"
     lines.append(f"同期指数收益率：{bench}")
-    lines.append(f"现金：RM {s.cash:,.2f}")
+    lines.append(f"现金：{money(st, s.cash)}")
     lines.append(f"持仓数：{s.positions_count}")
     if s.pending_count:
-        lines.append(f"明天开盘待执行挂单：{s.pending_count}")
+        lines.append(f"下一个交易日开盘待执行挂单：{s.pending_count}")
     for n in s.notes:
         lines.append(f"ℹ️ {n}")
     return "\n".join(lines)
 
 
-def format_alert(error_type: str, detail: str, suggestion: str) -> str:
-    return f"⚠️ [{PROJECT_NAME}] {error_type}\n{detail}\n建议：{suggestion}"
+def format_alert(error_type: str, detail: str, suggestion: str,
+                 market: Optional[str] = None) -> str:
+    """⚠️ [AiTradingMalaysia][US] 错误类型 + 说明 + 建议。market=None：和单一市场无关（例如保活）。"""
+    where = f"[{PROJECT_NAME}]" + (f"[{market}]" if market else "")
+    return f"⚠️ {where} {error_type}\n{detail}\n建议：{suggestion}"
 
 
-def format_holiday() -> str:
-    return f"📅 [{PROJECT_NAME}] 今天休市，没有新数据"
+def format_holiday(st: Settings) -> str:
+    return f"📅 {tag(st)} 今天休市，没有新数据"
 
 
-def format_preclose(detail: str) -> str:
-    return f"⏰ [{PROJECT_NAME}] {detail}"
+def format_preclose(st: Settings, detail: str) -> str:
+    return f"⏰ {tag(st)} {detail}"
 
 
-def format_rerun_skip(run_date) -> str:
-    return f"⏭️ [{PROJECT_NAME}] {run_date} 今天已经跑过，这次跳过（不会重复交易）"
+def format_rerun_skip(st: Settings, run_date) -> str:
+    return f"⏭️ {tag(st)} {run_date} 今天已经跑过，这次跳过（不会重复交易）"
 
 
 class ConsoleNotifier:
