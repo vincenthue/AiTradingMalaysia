@@ -1,10 +1,13 @@
 <script setup>
 // 交易记录（可按日期和代码筛选）
 import { computed, ref } from 'vue'
-import { price, qty, rm } from '../format.js'
+import { money, price, qty } from '../format.js'
 import { stockName } from '../names.js'
 
-const props = defineProps({ trades: { type: Array, required: true } })
+const props = defineProps({
+  trades: { type: Array, required: true },
+  symbol: { type: String, default: 'RM' },
+})
 
 const ticker = ref('')
 const from = ref('')
@@ -59,8 +62,8 @@ const reset = () => { ticker.value = ''; from.value = ''; to.value = '' }
           <td><span class="badge" :class="t.side.toLowerCase()">{{ t.side === 'BUY' ? '买 BUY' : '卖 SELL' }}</span></td>
           <td class="r num">{{ qty(t.quantity) }}</td>
           <td class="r num">{{ price(t.price) }}</td>
-          <td class="r num">{{ rm(t.quantity * t.price) }}</td>
-          <td class="r num">{{ rm(t.fees) }}</td>
+          <td class="r num">{{ money(t.quantity * t.price, symbol) }}</td>
+          <td class="r num">{{ money(t.fees, symbol) }}</td>
           <td class="reason">{{ t.reason }}</td>
         </tr>
         <tr v-if="!rows.length"><td colspan="8" class="empty">没有交易记录 No trades</td></tr>

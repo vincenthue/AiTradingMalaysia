@@ -1,4 +1,4 @@
-// 显示用的股票名称（和 config/settings.yaml 的 watchlist 对应；没有的就只显示代码）
+// 显示用的股票名称（和 config/markets.yaml 的 watchlist 对应；没有的就只显示代码）
 const NAMES = {
   '0166.KL': 'Inari',
   '4197.KL': 'Sime Darby',
@@ -9,6 +9,18 @@ const NAMES = {
   '3182.KL': 'Genting',
   '5296.KL': 'MR DIY',
   '^KLSE': 'FBM KLCI',
+  // 美股
+  SPYM: 'SPDR S&P 500 ETF',
+  IAU: 'iShares Gold ETF',
+  BAC: 'Bank of America',
+  HPE: 'Hewlett Packard Enterprise',
+  VZ: 'Verizon',
+  T: 'AT&T',
+  PFE: 'Pfizer',
+  NU: 'Nu Holdings',
+  SOFI: 'SoFi',
+  F: 'Ford',
+  '^GSPC': 'S&P 500',
 }
 
 export const stockName = (ticker) => NAMES[ticker] ?? ''

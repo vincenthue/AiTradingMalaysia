@@ -14,6 +14,9 @@
   --warn-text: #7a4b00;
   --line-bot: #0f766e;
   --line-index: #94a3b8;
+  --line-my: #0f766e;
+  --line-us: #2563eb;
+  --line-other: #9333ea;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
   color-scheme: light;
 }
@@ -35,6 +38,9 @@
     --warn-text: #f4cf7c;
     --line-bot: #2dd4bf;
     --line-index: #64748b;
+  --line-my: #2dd4bf;
+  --line-us: #60a5fa;
+  --line-other: #c084fc;
     --shadow: none;
     color-scheme: dark;
   }
@@ -100,3 +106,10 @@ input, select, button {
 button { cursor: pointer; }
 button:hover { background: var(--surface-2); }
 input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.metric .label { font-size: 12px; color: var(--muted); font-weight: 600; }
+.metric .value { font-size: 24px; font-weight: 700; margin: 4px 0 2px; letter-spacing: -0.01em; }
+.small { font-size: 12px; }
+@media (max-width: 860px) { .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 420px) { .metric .value { font-size: 19px; } }
