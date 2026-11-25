@@ -70,6 +70,14 @@ create table if not exists public.bot_runs (
     finished_at timestamptz
 );
 
+-- 每只股票 + 指数的最新收盘价（bot 每个交易日更新；dashboard 用来显示现价和盈亏）
+create table if not exists public.latest_prices (
+    ticker     text primary key,
+    close      numeric(14, 4) not null check (close > 0),
+    price_date date not null,
+    updated_at timestamptz not null default now()
+);
+
 -- ---------------------------------------------------------------- RLS
 
 alter table public.account         enable row level security;
@@ -78,11 +86,12 @@ alter table public.trades          enable row level security;
 alter table public.pending_orders  enable row level security;
 alter table public.daily_snapshots enable row level security;
 alter table public.bot_runs        enable row level security;
+alter table public.latest_prices   enable row level security;
 
 do $$
 declare t text;
 begin
-    foreach t in array array['account','positions','trades','pending_orders','daily_snapshots','bot_runs']
+    foreach t in array array['account','positions','trades','pending_orders','daily_snapshots','bot_runs','latest_prices']
     loop
         execute format('drop policy if exists "read only for anon" on public.%I', t);
         execute format(

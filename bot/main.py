@@ -217,6 +217,8 @@ def run_once(
     bench_close = float(bench_df["Close"].iloc[-1])
     prev_snaps = [s for s in db.get_snapshots() if s.snapshot_date < today]
     db.save_snapshot(DailySnapshot(today, total_value, acct.cash, pos_value, bench_close))
+    # 最新收盘价（dashboard 显示现价用；数据可疑 / 今天没数据的股票不更新）
+    db.save_latest_prices({**closes, settings.benchmark: bench_close}, today)
 
     # 10. 记录成功（bot_runs 由 execute() 写入）
     # 11. 每日总结（就算没有交易也一定发）

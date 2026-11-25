@@ -228,3 +228,20 @@ def test_cutoff_boundary(small_settings):
     r = execute(small_settings, InMemoryDB(10000), Quiet(), downloader=dl, sleep=no_sleep,
                 now=datetime(2026, 11, 24, 17, 30, tzinfo=myt))
     assert r.status == "success"
+
+
+def test_latest_prices_saved_on_trading_day(small_settings):
+    db = InMemoryDB(10000)
+    execute(small_settings, db, Quiet(), now=at(TUE), downloader=market(small_settings, TUE),
+            sleep=no_sleep)
+    assert set(db.latest_prices) == set(small_settings.watchlist) | {small_settings.benchmark}
+    assert db.latest_prices["1155.KL"] == (10.0, TUE)
+
+
+def test_supabase_save_latest_prices_upserts():
+    s = FakeSession([FakeResp(201, None)])
+    SupabaseDB("https://abc.supabase.co", FAKE_KEY, session=s).save_latest_prices(
+        {"1155.KL": 10.14}, date(2026, 11, 24))
+    method, url, kw = s.calls[0]
+    assert url.endswith("/latest_prices") and kw["params"] == {"on_conflict": "ticker"}
+    assert kw["json"][0]["ticker"] == "1155.KL" and kw["json"][0]["price_date"] == "2026-11-24"

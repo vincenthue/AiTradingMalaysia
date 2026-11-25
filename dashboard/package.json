@@ -1,0 +1,24 @@
+{
+  "name": "aitradingmalaysia",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "AiTradingMalaysia dashboard — 模拟交易｜虚拟资金 (paper trading, virtual money)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.119.2",
+    "echarts": "6.1.0",
+    "vue": "3.5.46"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.11",
+    "vite": "8.3.8"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}

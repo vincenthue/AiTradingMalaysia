@@ -154,6 +154,13 @@ class InMemoryDB:
     def get_snapshots(self) -> list[DailySnapshot]:
         return [copy.copy(s) for s in self.snapshots]
 
+    # ---------------------------------------------------------- latest prices
+    def save_latest_prices(self, prices: dict[str, float], price_date: date) -> None:
+        if not hasattr(self, "latest_prices"):
+            self.latest_prices: dict[str, tuple[float, date]] = {}
+        for t, p in prices.items():
+            self.latest_prices[t] = (p, price_date)
+
     # ---------------------------------------------------------- bot runs
     def has_successful_run(self, run_date: date) -> bool:
         r = self.runs.get(run_date)
@@ -307,6 +314,18 @@ class SupabaseDB:
                           float(r["positions_value"]), float(r["benchmark_close"]))
             for r in rows or []
         ]
+
+    # ---------------------------------------------------------- latest prices
+    def save_latest_prices(self, prices: dict[str, float], price_date: date) -> None:
+        if not prices:
+            return
+        self._request(
+            "POST", "latest_prices", params={"on_conflict": "ticker"},
+            prefer="resolution=merge-duplicates,return=minimal",
+            json=[{"ticker": t, "close": p, "price_date": str(price_date),
+                   "updated_at": datetime.now().astimezone().isoformat()}
+                  for t, p in prices.items()],
+        )
 
     # ---------------------------------------------------------- bot runs
     def has_successful_run(self, run_date: date) -> bool:
