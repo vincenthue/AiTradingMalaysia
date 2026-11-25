@@ -31,3 +31,6 @@ Thumbs.db
 
 # Claude 本地设定
 .claude/
+
+# 回测报告（本地产生，不 commit）
+reports/

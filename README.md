@@ -180,6 +180,24 @@ npm --prefix dashboard run dev
 
 ---
 
+## 回测（只在本地跑）
+
+用过去几年的真实股价，假装 bot 当时每天都在跑，看策略的成绩，和同期「买入持有指数」比较：
+
+```powershell
+.venv\Scripts\python -m scripts.backtest --market MY --open
+.venv\Scripts\python -m scripts.backtest --market US --open
+```
+
+- 默认过去 **10 年**；`--years 5`，或 `--start 2018-01-01 --end 2022-12-31` 指定期间。
+- 想试别的均线参数（不改 `markets.yaml`）：`--short 20 --long 50`。
+- 每天调用的是**和正式 bot 完全一样**的流程：策略、风控、费用、数据验证、止损都一样，信号用当天收盘价、**下一个交易日开盘价**成交（不偷看答案）。
+- 只用内存数据库：**不写 Supabase、不发 Telegram**，不影响每天在跑的 bot。
+- 终端会印出摘要（总收益率、年化、最大回撤、交易次数、胜率、费用）；HTML 报告（收益曲线 vs 指数、每一笔交易）放在 `reports/`（不会被 commit），`--open` 会用浏览器打开。
+- ⚠️ 回测是模拟：过去的成绩不代表未来。观察名单是今天挑的股票，回测过去会有幸存者偏差；股价未复权、不含股息。
+
+---
+
 ## 如何加一个新市场（例如新加坡）
 
 **不用改任何 Python 代码，也不用改数据库**，只要两步：
@@ -299,7 +317,7 @@ bot/                交易逻辑
 config/markets.yaml 每个市场的观察名单、费用、风控（不含密钥）
 sql/schema.sql      全新安装用的完整结构
 sql/migrations/     旧版（只有马股）升级到多市场用
-scripts/            keepalive.py、merge_last_run.py
+scripts/            backtest.py（回测）、keepalive.py、merge_last_run.py
 tests/              pytest（假数据，不连网络和数据库）
 dashboard/          Vue 3 + Vite + ECharts（总览 / 马股 / 美股）
 .github/workflows/  trading-bot-my.yml、trading-bot-us.yml、tests.yml、keepalive.yml
