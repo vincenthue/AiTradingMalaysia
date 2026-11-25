@@ -19,8 +19,22 @@ const media = window.matchMedia('(prefers-color-scheme: dark)')
 
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim()
 
+// 图表容器只在有 >= 2 天数据时才存在；按需建立 / 释放
+function ensureChart() {
+  if (!el.value) {
+    chart?.dispose()
+    chart = null
+    return false
+  }
+  if (!chart || chart.getDom() !== el.value) {
+    chart?.dispose()
+    chart = echarts.init(el.value, null, { renderer: 'svg' })
+  }
+  return true
+}
+
 function render() {
-  if (!chart) return
+  if (!ensureChart()) return
   const snaps = props.snapshots
   const b0 = snaps.length ? Number(snaps[0].benchmark_close) : 1
   const dates = snaps.map((s) => s.snapshot_date)
@@ -65,7 +79,6 @@ const onResize = () => chart?.resize()
 const onTheme = () => render()
 
 onMounted(() => {
-  chart = echarts.init(el.value, null, { renderer: 'svg' })
   render()
   window.addEventListener('resize', onResize)
   media.addEventListener('change', onTheme)
@@ -75,7 +88,7 @@ onBeforeUnmount(() => {
   media.removeEventListener('change', onTheme)
   chart?.dispose()
 })
-watch(() => [props.snapshots, props.initialCash], render, { deep: true })
+watch(() => [props.snapshots, props.initialCash], render, { deep: true, flush: 'post' })
 </script>
 
 <template>
