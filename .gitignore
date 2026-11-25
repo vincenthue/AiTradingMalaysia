@@ -1,0 +1,30 @@
+# 密钥（绝对不能 commit）
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# 本地数据库 / 临时文件
+*.sqlite
+*.sqlite3
+*.db
+
+# Node / dashboard
+node_modules/
+dist/
+.vercel/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

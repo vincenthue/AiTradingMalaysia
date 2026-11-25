@@ -1,0 +1,38 @@
+# 每周保活（备援）：
+# 1. 对 Supabase 做一次简单查询，避免免费版因一周不活跃被暂停
+# 2. 重新启用 Trading Bot workflow，避免 GitHub 因 60 天不活跃停用定时任务
+name: Keepalive
+
+on:
+  schedule:
+    - cron: "0 2 * * 0"         # 每周日 UTC 02:00（马来西亚时间 10:00）
+  workflow_dispatch: {}
+
+permissions:
+  actions: write                # 用来重新启用 trading-bot workflow
+  contents: read
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Ping Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m scripts.keepalive
+      - name: Re-enable Trading Bot workflow
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable trading-bot.yml --repo "$GITHUB_REPOSITORY"

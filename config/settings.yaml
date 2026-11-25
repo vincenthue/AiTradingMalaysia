@@ -1,0 +1,37 @@
+# AiTradingMalaysia 配置（不含任何密钥；密钥只从环境变量读取）
+initial_cash: 10000          # RM
+timezone: Asia/Kuala_Lumpur
+benchmark: "^KLSE"           # FBM KLCI 指数，用来比较收益
+
+watchlist:                   # 先用几只大型蓝筹股（已用 yfinance 验证可抓取）
+  - 1155.KL   # Maybank
+  - 1295.KL   # Public Bank
+  - 1023.KL   # CIMB
+  - 5347.KL   # Tenaga Nasional
+  - 6888.KL   # Axiata
+
+strategy:
+  name: ma_crossover
+  short_window: 50
+  long_window: 200
+
+risk:
+  max_position_pct: 0.20     # 单只股票最多占总资产 20%
+  max_positions: 5
+  stop_loss_pct: 0.08        # 从买入价跌 8% 就止损卖出
+  min_cash_reserve: 500      # 至少保留 RM 500 现金
+
+fees:                        # 近似值，可调整；运行前请核对实际费率
+  brokerage_pct: 0.001
+  brokerage_min: 8.0
+  clearing_pct: 0.0003
+  stamp_duty_per_1000: 1.0   # 按比例计算（RM 2,350 → RM 2.35）
+  stamp_duty_max: 1000
+
+lot_size: 100                # Bursa 每手 100 股，只能整手买卖
+
+data:                        # 数据抓取与验证（PROJECT_SPEC 第 7.1 节）
+  history_period: 2y         # 抓取多久的历史数据（需 > long_window 个交易日）
+  retry_delays_seconds: [5, 15, 45]   # 失败后重试 3 次，指数退避
+  max_daily_move_pct: 0.30   # 单日涨跌超过 30% 视为可疑
+  max_stale_days: 5          # 最新数据超过 5 天视为过期

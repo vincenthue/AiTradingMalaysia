@@ -1,0 +1,53 @@
+# AiTradingMalaysia 每日模拟交易（虚拟资金）
+name: Trading Bot
+
+on:
+  schedule:
+    # 马来西亚时间 18:30（UTC 10:30），周一到周五，收市后运行
+    - cron: "30 10 * * 1-5"
+  workflow_dispatch: {}          # 可以在 Actions 页面手动 Run workflow
+
+# 同一时间只能有一个 bot 在跑；新触发的会排队，不会取消正在跑的
+concurrency:
+  group: trading-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write                # 需要 commit logs/last_run.json（保持 repo 活跃）
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m bot.main
+
+      # bot 成功或跳过时才会到这一步（失败会以非零状态结束，GitHub 会寄 email）
+      - name: Commit last_run.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add logs/last_run.json
+          if git diff --cached --quiet; then
+            echo "last_run.json 没有变化"
+          else
+            git commit -m "chore: update last_run.json [skip ci]"
+            git pull --rebase
+            git push
+          fi
