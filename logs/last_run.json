@@ -1,7 +1,7 @@
 {
   "project": "AiTradingMalaysia",
-  "run_date": null,
-  "status": "not_run_yet",
-  "message": "每次成功运行后由 GitHub Actions 更新",
-  "updated_at": null
+  "run_date": "2026-11-25",
+  "status": "success",
+  "message": "完成：成交 0 笔，新挂单 0 笔",
+  "updated_at": "2026-11-25T02:37:58+00:00"
 }
