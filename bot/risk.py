@@ -1,4 +1,4 @@
-"""风控规则（PROJECT_SPEC 第 7.3 节）+ 费用计算 + 买入数量计算 + 止损。
+"""风控规则（PROJECT_SPEC 第 7.4 节）+ 买入数量计算 + 止损（费用见 bot/fees.py）。
 
 - 买入后现金不能低于 总资产 × min_cash_reserve_pct（当然也不能变负数）
 - 只能整手买卖
@@ -9,41 +9,14 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 
 from bot.config import FeeConfig, RiskConfig
+from bot.fees import Fees, buy_cost, calculate_fees  # noqa: F401 - 对外提供
 from bot.models import Position
 
 
 class RiskViolation(Exception):
     """交易被风控拒绝。"""
-
-
-@dataclass(frozen=True)
-class Fees:
-    brokerage: float
-    clearing: float
-    stamp_duty: float
-
-    @property
-    def total(self) -> float:
-        return round(self.brokerage + self.clearing + self.stamp_duty, 2)
-
-
-def calculate_fees(value: float, cfg: FeeConfig) -> Fees:
-    """交易费用（买卖都收）。印花税按比例计算，有上限。四舍五入到仙（0.01）。"""
-    if value <= 0:
-        raise ValueError("交易金额必须 > 0")
-    brokerage = max(value * cfg.brokerage_pct, cfg.brokerage_min)
-    clearing = value * cfg.clearing_pct
-    stamp = min(value / 1000.0 * cfg.stamp_duty_per_1000, cfg.stamp_duty_max)
-    return Fees(round(brokerage, 2), round(clearing, 2), round(stamp, 2))
-
-
-def buy_cost(quantity: int, price: float, cfg: FeeConfig) -> float:
-    """买入总成本 = 股价 × 数量 + 费用。"""
-    value = quantity * price
-    return round(value + calculate_fees(value, cfg).total, 2)
 
 
 # ------------------------------------------------------------- 买入检查

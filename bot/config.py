@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from datetime import time
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -56,11 +56,33 @@ class RiskConfig:
 
 @dataclass(frozen=True)
 class FeeConfig:
-    brokerage_pct: float
-    brokerage_min: float
-    clearing_pct: float
-    stamp_duty_per_1000: float
-    stamp_duty_max: float
+    """费用参数。市场没写的项目 = 0（不收）；计算见 bot/fees.py。"""
+    brokerage_pct: float = 0.0
+    brokerage_min: float = 0.0
+    clearing_pct: float = 0.0
+    stamp_duty_per_1000: float = 0.0
+    stamp_duty_max: Optional[float] = None    # None = 没有上限
+    sec_fee_pct_on_sell: float = 0.0          # 美股 SEC fee：只在卖出时收
+
+
+FEE_KEYS = tuple(f for f in FeeConfig.__dataclass_fields__)
+
+
+def _parse_fees(f: Mapping, where: str) -> FeeConfig:
+    if not isinstance(f, Mapping) or not f:
+        raise ConfigError(f"{where}fees 必须列出至少一个费用项目")
+    unknown = sorted(set(f) - set(FEE_KEYS))
+    if unknown:
+        raise ConfigError(f"{where}fees 有不认识的项目：{', '.join(unknown)}（可用：{', '.join(FEE_KEYS)}）")
+    values = {}
+    for k, v in f.items():
+        try:
+            values[k] = None if v is None else float(v)
+        except (TypeError, ValueError):
+            raise ConfigError(f"{where}fees.{k} 必须是数字") from None
+        if values[k] is not None and values[k] < 0:
+            raise ConfigError(f"{where}fees.{k} 不能是负数")
+    return FeeConfig(**values)
 
 
 @dataclass(frozen=True)
@@ -162,13 +184,7 @@ def parse_market(raw: Mapping, code: str) -> Settings:
             stop_loss_pct=float(_require(r, "stop_loss_pct", "risk.")),
             min_cash_reserve_pct=float(_require(r, "min_cash_reserve_pct", "risk.")),
         ),
-        fees=FeeConfig(
-            brokerage_pct=float(_require(f, "brokerage_pct", w + "fees.")),
-            brokerage_min=float(_require(f, "brokerage_min", w + "fees.")),
-            clearing_pct=float(_require(f, "clearing_pct", w + "fees.")),
-            stamp_duty_per_1000=float(_require(f, "stamp_duty_per_1000", w + "fees.")),
-            stamp_duty_max=float(_require(f, "stamp_duty_max", w + "fees.")),
-        ),
+        fees=_parse_fees(f, w),
         lot_size=int(_require(m, "lot_size", w)),
         data=DataConfig(
             history_period=str(_require(d, "history_period", "data.")),

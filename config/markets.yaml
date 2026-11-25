@@ -36,6 +36,35 @@ markets:
       max_position_pct: 0.50
       min_cash_reserve_pct: 0.10
 
+  US:
+    name: US Stocks
+    flag: "🇺🇸"
+    timezone: America/New_York
+    timezone_label: 纽约时间
+    market_close_cutoff: "16:30"  # 纽约时间（收市 16:00）；workflow 固定 UTC 22:30 跑，一定在这之后
+    currency: USD
+    currency_symbol: "$"
+    initial_cash: 200
+    benchmark: "^GSPC"            # S&P 500
+    lot_size: 1                   # 可以 1 股 1 股买
+    watchlist:                    # 按顺序 = 买入优先顺序；USD 200 本金 → 选 $100 以下、成交活跃的
+      - SPYM      # ETF：S&P 500
+      - IAU       # ETF：黄金
+      - BAC       # Bank of America
+      - HPE       # Hewlett Packard Enterprise
+      - VZ        # Verizon
+      - T         # AT&T
+      - PFE       # Pfizer
+      - NU        # Nu Holdings
+      - SOFI      # SoFi Technologies
+      - F         # Ford
+    fees:                         # 模拟马来西亚券商买美股的收费，近似值，可调整
+      brokerage_pct: 0.001
+      brokerage_min: 1.0
+      sec_fee_pct_on_sell: 0.0000278   # 只在卖出时收，进位到 1 分钱
+    risk:                         # 覆盖 defaults（小本金：单只可到 50%；保留 5% 沿用 defaults）
+      max_position_pct: 0.50
+
 defaults:
   strategy:
     name: ma_crossover

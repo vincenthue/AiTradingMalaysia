@@ -22,7 +22,7 @@ D = date(2026, 11, 1)
 
 
 def test_fees_minimum_brokerage(settings):
-    f = calculate_fees(1000, settings.fees)       # 0.1% = RM1 < RM8 → 收 RM8
+    f = calculate_fees(1000, settings.fees, "BUY")       # 0.1% = RM1 < RM8 → 收 RM8
     assert f.brokerage == 8.0
     assert f.clearing == 0.30
     assert f.stamp_duty == 1.00
@@ -30,18 +30,29 @@ def test_fees_minimum_brokerage(settings):
 
 
 def test_fees_stamp_duty_proportional(settings):
-    f = calculate_fees(2350, settings.fees)
+    f = calculate_fees(2350, settings.fees, "BUY")
     assert f.stamp_duty == 2.35
 
 
 def test_fees_large_trade(settings):
-    f = calculate_fees(20000, settings.fees)
+    f = calculate_fees(20000, settings.fees, "BUY")
     assert f.brokerage == 20.0 and f.clearing == 6.0 and f.stamp_duty == 20.0
 
 
 def test_fees_stamp_duty_cap(settings):
-    f = calculate_fees(5_000_000, settings.fees)
+    f = calculate_fees(5_000_000, settings.fees, "BUY")
     assert f.stamp_duty == 1000
+
+
+def test_my_fees_same_on_sell_no_sec_fee(settings):
+    """马股卖出和买入收一样的费用，没有 SEC fee。"""
+    assert calculate_fees(1000, settings.fees, "SELL") == calculate_fees(1000, settings.fees, "BUY")
+    assert calculate_fees(1000, settings.fees, "SELL").sec_fee == 0
+
+
+def test_fees_reject_bad_side(settings):
+    with pytest.raises(ValueError):
+        calculate_fees(1000, settings.fees, "SHORT")
 
 
 # ------------------------------------------------------------ 买入风控

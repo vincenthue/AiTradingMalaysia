@@ -47,7 +47,7 @@ class SimBroker:
             reason: str, order_id: int | None = None) -> Trade:
         if quantity <= 0 or quantity % self.st.lot_size != 0:
             raise RiskViolation(f"{ticker}：{quantity} 股不是整手")
-        fees = calculate_fees(quantity * price, self.st.fees).total
+        fees = calculate_fees(quantity * price, self.st.fees, "BUY").total
         if self.db.get_account().cash - (quantity * price + fees) < 0:
             raise RiskViolation(f"{ticker}：现金会变负数，拒绝成交")
         return self.db.execute_buy(ticker, quantity, price, fees, trade_date, reason, order_id)
@@ -55,7 +55,7 @@ class SimBroker:
     def sell(self, ticker: str, quantity: int, price: float, trade_date: date,
              reason: str, order_id: int | None = None) -> Trade:
         validate_sell(ticker, quantity, self.db.get_positions(), self.st.lot_size)
-        fees = calculate_fees(quantity * price, self.st.fees).total
+        fees = calculate_fees(quantity * price, self.st.fees, "SELL").total
         return self.db.execute_sell(ticker, quantity, price, fees, trade_date, reason, order_id)
 
     # ------------------------------------------------------------ 执行挂单
