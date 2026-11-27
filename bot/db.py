@@ -207,6 +207,10 @@ class InMemoryDB:
         r = self.runs.get(run_date)
         return copy.copy(r) if r else None
 
+    def last_success_date(self) -> Optional[date]:
+        done = [d for d, r in self.runs.items() if r.status == "success"]
+        return max(done) if done else None
+
     def record_run(self, run: BotRun) -> None:
         """同一市场同一天只有一笔（(market, run_date) UNIQUE）；已成功的不覆盖，failed / skipped 会被覆盖。"""
         if self.has_successful_run(run.run_date):
@@ -406,6 +410,12 @@ class SupabaseDB:
         rows = self._request("GET", "bot_runs", params=self._where(
             select="id", run_date=f"eq.{run_date}", status="eq.success"))
         return bool(rows)
+
+    def last_success_date(self) -> Optional[date]:
+        """该市场最近一个成功处理的交易日（没有就 None）。"""
+        rows = self._request("GET", "bot_runs", params=self._where(
+            select="run_date", status="eq.success", order="run_date.desc", limit="1"))
+        return _d(rows[0]["run_date"]) if rows else None
 
     def get_run(self, run_date: date) -> Optional[BotRun]:
         """该市场某一天的运行记录（没有就 None）。"""

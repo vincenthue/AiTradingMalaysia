@@ -330,3 +330,94 @@ def test_supabase_get_run():
     assert db.get_run(TUE).message.startswith("今天休市")
     assert db.get_run(WED) is None
     assert s.calls[0][2]["params"]["market"] == "eq.MY"
+
+
+# ------------------------------------------------------------ 补跑错过的交易日
+
+
+def _rising_bench(st, end, n=30):
+    """指数每天 +1，用来确认补跑那天用的是那天的收盘价。"""
+    return make_df([1500.0 + i for i in range(n)], end)
+
+
+def _seed_success(db, day):
+    from bot.models import BotRun
+    t = datetime(2026, 1, 1, tzinfo=UTC)
+    db.record_run(BotRun(day, "success", "seed", t, t))
+
+
+def test_late_run_after_midnight_processes_yesterday(small_settings):
+    """11/26 的定时运行拖到 11/27 凌晨 3:45 才启动：要处理 11/26，而不是当成 11/27 还没收市。"""
+    from bot.main import execute_with_catchup
+    st = small_settings
+    db, n = InMemoryDB(st.initial_cash, "MY"), Quiet()
+    _seed_success(db, MON)
+    dl = market(st, TUE, {st.benchmark: _rising_bench(st, TUE)})      # 数据只到 TUE（WED 还没开盘）
+    now = datetime(2026, 11, 25, 3, 45, tzinfo=MYT)                    # WED 凌晨
+    r = execute_with_catchup(st, db, n, now=now, downloader=dl, sleep=no_sleep, quiet_repeat=True)
+    assert db.runs[TUE].status == "success"
+    assert [s.snapshot_date for s in db.get_snapshots()] == [TUE]
+    assert r.status == "skipped" and db.runs[WED].status == "skipped"  # WED 还没收市
+    assert sum(m.startswith("📊 🇲🇾 [MY] 2026-11-24") for m in n.sent) == 1
+    assert not any(m.startswith("⏰") for m in n.sent)                 # 定时运行收市前不发 ⏰
+
+
+def test_catchup_uses_each_days_own_close(small_settings):
+    from bot.main import execute_with_catchup
+    st = small_settings
+    db = InMemoryDB(st.initial_cash, "MY")
+    _seed_success(db, MON)
+    bench = _rising_bench(st, WED)
+    dl = market(st, WED, {st.benchmark: bench})
+    execute_with_catchup(st, db, Quiet(), now=my_close_run(WED), downloader=dl, sleep=no_sleep)
+    snaps = {s.snapshot_date: s.benchmark_close for s in db.get_snapshots()}
+    assert snaps == {TUE: float(bench.loc[TUE, "Close"]), WED: float(bench.loc[WED, "Close"])}
+    assert db.runs[TUE].status == db.runs[WED].status == "success"
+
+
+def test_catchup_skips_weekends_and_first_run(small_settings):
+    from bot.main import missed_days
+    st = small_settings
+    db = InMemoryDB(st.initial_cash, "MY")
+    assert missed_days(st, db, my_close_run(WED)) == []                # 从来没成功过 → 不补
+    _seed_success(db, date(2026, 11, 20))                              # 星期五
+    assert missed_days(st, db, my_close_run(MON)) == []                # 六、日不补
+    assert missed_days(st, db, my_close_run(WED)) == [MON, TUE]
+    _seed_success(db, MON)
+    assert missed_days(st, db, my_close_run(WED)) == [TUE]
+
+
+def test_catchup_lookback_is_limited(small_settings):
+    from bot.main import CATCHUP_LOOKBACK_DAYS, missed_days
+    st = small_settings
+    db = InMemoryDB(st.initial_cash, "MY")
+    _seed_success(db, date(2026, 10, 1))
+    days = missed_days(st, db, my_close_run(WED))
+    assert days and min(days) >= date(2026, 11, 25) - __import__("datetime").timedelta(days=CATCHUP_LOOKBACK_DAYS)
+
+
+def test_catchup_stops_at_failed_day(small_settings):
+    from bot.main import execute_with_catchup
+    st = small_settings
+    db, n = InMemoryDB(st.initial_cash, "MY"), Quiet()
+    _seed_success(db, MON)
+    broken = make_df([10.0] * 30, WED)
+    broken.loc[TUE, "Close"] = float("nan")                            # TUE 的数据坏掉
+    dl = market(st, WED, {"1155.KL": broken})
+    r = execute_with_catchup(st, db, n, now=my_close_run(WED), downloader=dl, sleep=no_sleep)
+    assert r.status == "failed" and db.runs[TUE].status == "failed"
+    assert WED not in db.runs                                          # 不跳过 TUE 去处理 WED
+    assert any("[AiTradingMalaysia][MY]" in m for m in n.sent)
+
+
+def test_catchup_on_past_holiday_is_silent(small_settings):
+    from bot.main import execute_with_catchup
+    st = small_settings
+    db, n = InMemoryDB(st.initial_cash, "MY"), Quiet()
+    _seed_success(db, MON)
+    data = market(st, WED)
+    no_tue = {t: data(t, "2y").drop(index=TUE) for t in list(st.watchlist) + [st.benchmark]}
+    execute_with_catchup(st, db, n, now=my_close_run(WED), downloader=lambda t, p: no_tue[t],
+                         sleep=no_sleep, quiet_repeat=True)
+    assert db.runs[TUE].status == "skipped" and db.runs[WED].status == "success"
+    assert not any(m.startswith("📅") for m in n.sent)

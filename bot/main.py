@@ -17,9 +17,10 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 from bot import data_fetcher as dfetch
 from bot import safety
@@ -89,11 +90,13 @@ def run_once(
     downloader: dfetch.Downloader = dfetch.yfinance_downloader,
     sleep: Callable[[float], None] = time.sleep,
     quiet_repeat: bool = False,
+    catchup: bool = False,
 ) -> RunOutcome:
     """跑一次完整流程。数据 / 风控问题抛 HaltTrading 或 DataError，由 execute() 统一处理。
 
-    quiet_repeat：定时的后备运行用。今天已经成功 → 安静跳过（不发 ⏭️）；
+    quiet_repeat：定时运行用。今天已经成功 → 安静跳过（不发 ⏭️）；收市前不发 ⏰；
     今天已经发过休市通知 → 不再重复发 📅。警报（⚠️）照常发。
+    catchup：补跑过去错过的交易日。那天其实休市的话不发 📅（已经是过去的事）。
     """
     # 2. 用该市场自己的时区算“今天”（不能用服务器时间 / 马来西亚时间去算别的市场）
     today = local_today(settings, now)
@@ -110,7 +113,8 @@ def run_once(
     if before_close_cutoff(settings, now):
         msg = (f"现在是{settings.timezone_label} {local_now(settings, now):%H:%M}，还没收市"
                f"（{settings.market_close_cutoff:%H:%M} 后才运行），这次不交易")
-        notifier.send(format_preclose(settings, msg))
+        if not quiet_repeat:
+            notifier.send(format_preclose(settings, msg))
         return RunOutcome("skipped", msg, 0)
 
     # 状态一致性检查：本金和设定一致、现金不能是负数、持仓 / 挂单必须整手
@@ -141,7 +145,9 @@ def run_once(
     if latest != today:
         msg = f"{HOLIDAY_PREFIX}，没有新数据（最新数据日期 {latest}）"
         earlier = db.get_run(today) if quiet_repeat else None
-        if earlier and earlier.message.startswith(HOLIDAY_PREFIX):
+        if catchup:
+            log.info("补跑 %s：那天休市", today)
+        elif earlier and earlier.message.startswith(HOLIDAY_PREFIX):
             log.info("今天已经发过休市通知，这次不重复发")
         else:
             notifier.send(format_holiday(settings))
@@ -290,6 +296,7 @@ def execute(
     sleep: Callable[[float], None] = time.sleep,
     last_run_path: Optional[Path] = None,
     quiet_repeat: bool = False,
+    catchup: bool = False,
 ) -> RunOutcome:
     """最外层 try/except：任何异常 → 该市场不交易、发警报、记录 failed、非零退出码。"""
     now = now or datetime.now(timezone.utc)
@@ -301,7 +308,7 @@ def execute(
         notifier.send(format_alert(error_type, detail, suggestion, mk))
 
     try:
-        outcome = run_once(settings, db, notifier, now, downloader, sleep, quiet_repeat)
+        outcome = run_once(settings, db, notifier, now, downloader, sleep, quiet_repeat, catchup)
     except HaltTrading as e:
         alert(e.error_type, e.detail, e.suggestion)
         outcome = RunOutcome("failed", str(e), 1)
@@ -342,6 +349,78 @@ def execute(
     if last_run_path is not None and outcome.status != "failed":
         write_last_run(last_run_path, mk, run_date, outcome)
     return outcome
+
+
+# ====================================================================== 补跑错过的交易日
+
+CATCHUP_LOOKBACK_DAYS = 7     # 最多往回补几天（日历天）
+
+
+def close_time(settings: Settings, day: date) -> datetime:
+    """某个交易日收市后的时间（当地 market_close_cutoff 再过 1 小时）。"""
+    return datetime.combine(day, settings.market_close_cutoff, ZoneInfo(settings.timezone)) + timedelta(hours=1)
+
+
+def missed_days(settings: Settings, db, now: datetime) -> list[date]:
+    """上次成功之后、今天之前，还没成功处理的工作日（最旧的先）。
+
+    GitHub 的定时运行可能晚好几个小时才启动（甚至过了午夜），这些日子要按顺序补上。
+    从来没成功过（第一次运行）→ 不补。只往回看 CATCHUP_LOOKBACK_DAYS 天。
+    """
+    last = db.last_success_date()
+    if last is None:
+        return []
+    today = local_today(settings, now)
+    start = max(last + timedelta(days=1), today - timedelta(days=CATCHUP_LOOKBACK_DAYS))
+    days, d = [], start
+    while d < today:                     # 今天由正常流程处理（还没收市就只记录跳过）
+        if d.weekday() < 5 and not db.has_successful_run(d):
+            days.append(d)
+        d += timedelta(days=1)
+    return days
+
+
+def execute_with_catchup(
+    settings: Settings,
+    db,
+    notifier,
+    now: Optional[datetime] = None,
+    downloader: dfetch.Downloader = dfetch.yfinance_downloader,
+    sleep: Callable[[float], None] = time.sleep,
+    last_run_path: Optional[Path] = None,
+    quiet_repeat: bool = False,
+) -> RunOutcome:
+    """正式运行用：先按顺序补跑错过的交易日（每天只用那天收市为止的数据），再处理今天。
+
+    补跑的某一天失败 → 停下来（不跳着处理后面的日子），下次运行再试。
+    """
+    now = now or datetime.now(timezone.utc)
+    cache: dict[str, object] = {}
+
+    def cached(ticker: str, period: str):
+        if ticker not in cache:
+            cache[ticker] = downloader(ticker, period)
+        return cache[ticker]
+
+    try:
+        days = missed_days(settings, db, now)
+    except Exception as e:  # noqa: BLE001 - 查不到就当作没有要补的，正常流程会再碰到数据库问题
+        log.warning("检查错过的交易日失败：%s", e)
+        days = []
+
+    for day in days:
+        def upto(ticker: str, period: str, _day=day):
+            df = dfetch.normalize(cached(ticker, period), ticker)
+            return df.loc[:_day]
+
+        log.info("补跑 %s %s", settings.market, day)
+        out = execute(settings, db, notifier, now=close_time(settings, day), downloader=upto,
+                      sleep=sleep, last_run_path=last_run_path, quiet_repeat=True, catchup=True)
+        if out.status == "failed":
+            return out
+
+    return execute(settings, db, notifier, now=now, downloader=cached, sleep=sleep,
+                   last_run_path=last_run_path, quiet_repeat=quiet_repeat)
 
 
 def write_last_run(path: Path, market: str, run_date, outcome: RunOutcome) -> None:
@@ -426,8 +505,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"=== {PROJECT_NAME} [{market}]：模拟交易｜虚拟资金 ===")
     notifier = TelegramNotifier(env["TELEGRAM_BOT_TOKEN"], env["TELEGRAM_CHAT_ID"])
     db = SupabaseDB(env["SUPABASE_URL"], env["SUPABASE_SERVICE_KEY"], market=market)
-    outcome = execute(settings, db, notifier, last_run_path=LAST_RUN_PATH,
-                      quiet_repeat=args.quiet_repeat)
+    outcome = execute_with_catchup(settings, db, notifier, last_run_path=LAST_RUN_PATH,
+                                   quiet_repeat=args.quiet_repeat)
     print(f"=== 结果：{outcome.status} — {safety.redact(outcome.message)} ===")
     return outcome.exit_code
 
