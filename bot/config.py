@@ -39,11 +39,19 @@ class MissingEnvError(ConfigError):
         super().__init__("缺少环境变量：" + ", ".join(self.missing))
 
 
+STRATEGY_NAMES = ("ma_crossover", "rsi_pullback", "rsi_daytrade")
+
+
 @dataclass(frozen=True)
 class StrategyConfig:
     name: str
-    short_window: int
-    long_window: int
+    short_window: int = 50        # ma_crossover
+    long_window: int = 200        # ma_crossover
+    rsi_period: int = 2           # rsi_*：几天的 RSI
+    rsi_entry: float = 10.0       # rsi_*：RSI 低于这个数 = 急跌，买入
+    trend_window: int = 200       # rsi_*：股价要在这条均线上方（上升趋势）才买
+    exit_window: int = 5          # rsi_pullback：收盘高于这条均线就卖
+    max_hold_days: int = 10       # rsi_pullback：最多持有几个交易日
 
 
 @dataclass(frozen=True)
@@ -138,6 +146,24 @@ def _merged(defaults: Mapping, block: Mapping, key: str) -> dict:
     return base
 
 
+def _parse_strategy(s: Mapping) -> StrategyConfig:
+    known = set(StrategyConfig.__dataclass_fields__)
+    unknown = sorted(set(s) - known)
+    if unknown:
+        raise ConfigError(f"strategy 有不认识的项目：{', '.join(unknown)}（可用：{', '.join(sorted(known))}）")
+    name = str(_require(s, "name", "strategy."))
+    kw = {}
+    for k, v in s.items():
+        if k == "name":
+            continue
+        typ = StrategyConfig.__dataclass_fields__[k].type
+        try:
+            kw[k] = float(v) if typ in ("float", float) else int(v)
+        except (TypeError, ValueError):
+            raise ConfigError(f"strategy.{k} 必须是数字") from None
+    return StrategyConfig(name=name, **kw)
+
+
 def market_codes(raw: Mapping) -> tuple[str, ...]:
     markets = _require(raw, "markets", "")
     if not isinstance(markets, Mapping) or not markets:
@@ -173,11 +199,7 @@ def parse_market(raw: Mapping, code: str) -> Settings:
         market_close_cutoff=_parse_hhmm(_require(m, "market_close_cutoff", w)),
         benchmark=str(_require(m, "benchmark", w)),
         watchlist=watchlist,
-        strategy=StrategyConfig(
-            name=str(_require(s, "name", "strategy.")),
-            short_window=int(_require(s, "short_window", "strategy.")),
-            long_window=int(_require(s, "long_window", "strategy.")),
-        ),
+        strategy=_parse_strategy(s),
         risk=RiskConfig(
             max_position_pct=float(_require(r, "max_position_pct", "risk.")),
             max_positions=int(_require(r, "max_positions", "risk.")),
@@ -215,10 +237,17 @@ def _sanity_check(st: Settings) -> None:
         errors.append("watchlist 有重复的代码")
     if st.benchmark in st.watchlist:
         errors.append("benchmark 不能同时在 watchlist 里")
-    if st.strategy.name != "ma_crossover":
-        errors.append(f"不支持的策略：{st.strategy.name}")
-    if not (0 < st.strategy.short_window < st.strategy.long_window):
-        errors.append("需要 0 < short_window < long_window")
+    sc = st.strategy
+    if sc.name not in STRATEGY_NAMES:
+        errors.append(f"不支持的策略：{sc.name}（可用：{', '.join(STRATEGY_NAMES)}）")
+    elif sc.name == "ma_crossover":
+        if not (0 < sc.short_window < sc.long_window):
+            errors.append("需要 0 < short_window < long_window")
+    else:
+        if min(sc.rsi_period, sc.trend_window, sc.exit_window, sc.max_hold_days) < 1:
+            errors.append("rsi_period / trend_window / exit_window / max_hold_days 都必须 >= 1")
+        if not (0 < sc.rsi_entry < 100):
+            errors.append("rsi_entry 必须在 0～100 之间")
     if not (0 < st.risk.max_position_pct <= 1):
         errors.append("max_position_pct 必须在 (0, 1]")
     if st.risk.max_positions < 1:

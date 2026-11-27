@@ -170,7 +170,7 @@ def test_unexpected_exception_alerts_and_fails(env, monkeypatch):
     def boom(*a, **k):
         raise KeyError("unexpected")
 
-    monkeypatch.setattr(bot_main, "generate_signals", boom)
+    monkeypatch.setattr(bot_main, "strategy_signals", boom)
     r = run(env, TUE, market(st, TUE))
     _assert_failed_no_trade(r, db, n)
     assert any("KeyError" in m for m in n.sent)

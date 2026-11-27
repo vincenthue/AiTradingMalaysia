@@ -49,7 +49,7 @@ from bot.notifier import (
     format_trade,
 )
 from bot.risk import buy_cost, max_buy_quantity, stop_loss_triggered
-from bot.strategy import generate_signals
+from bot.strategy import history_needed, same_day_exit, strategy_signals
 
 log = logging.getLogger(PROJECT_NAME)
 
@@ -131,7 +131,7 @@ def run_once(
 
     # 4. 数据验证（硬性错误会直接抛异常）
     report = dfetch.validate_all(
-        data, settings.benchmark, today, settings.strategy.long_window,
+        data, settings.benchmark, today, history_needed(settings.strategy) - 1,
         settings.data.max_daily_move_pct, settings.data.max_stale_days,
     )
     for reason in list(report.suspicious.values()) + report.warnings:
@@ -182,6 +182,20 @@ def run_once(
         notes.append(f"挂单 {o.side} {o.ticker} 今天没有可用数据，保留到下一个交易日")
 
     closes = {t: float(df["Close"].iloc[-1]) for t, df in tradable.items()}
+
+    # 当天进出（rsi_daytrade）：今天开盘买进的，今天收盘就卖掉；盘中跌破止损价就按止损价卖
+    if same_day_exit(settings.strategy):
+        for t, pos in db.get_positions().items():
+            if t not in tradable:
+                notes.append(f"{t} 今天没有数据，无法当天平仓，保留到下一个交易日")
+                continue
+            day = tradable[t].iloc[-1]
+            stop_price = round(pos.avg_price * (1 - settings.risk.stop_loss_pct), 4)
+            if float(day["Low"]) <= stop_price:
+                px, why = stop_price, f"当天止损：盘中跌破 {price(settings, stop_price)}"
+            else:
+                px, why = float(day["Close"]), "当天收盘平仓"
+            exec_res.trades.append(broker.sell(t, pos.quantity, px, today, why))
     new_orders: list[PendingOrder] = []
 
     def pending_tickers() -> set[str]:
@@ -201,10 +215,8 @@ def run_once(
 
     # 8. 策略信号 → 风控 → 写入挂单
     strategy_data = {t: df for t, df in tradable.items() if t not in report.insufficient}
-    signals = generate_signals(
-        strategy_data, settings.watchlist,
-        settings.strategy.short_window, settings.strategy.long_window,
-    )
+    signals = strategy_signals(settings.strategy, strategy_data, settings.watchlist,
+                               db.get_positions(), today)
     for sig in signals:
         positions = db.get_positions()
         if sig.ticker in pending_tickers():

@@ -35,6 +35,7 @@ from bot.db import InMemoryDB
 from bot.main import execute
 from bot.market import money
 from bot.models import DailySnapshot, Trade
+from bot.strategy import describe, history_needed
 
 log = logging.getLogger("backtest")
 
@@ -47,7 +48,7 @@ DEFAULT_YEARS = 10
 
 def warmup_days(st: Settings) -> int:
     """开始日之前要多抓多少天（日历天），让第一天就有足够数据算长均线。"""
-    return int(st.strategy.long_window * 1.6) + 30
+    return int(history_needed(st.strategy) * 1.6) + 30
 
 
 def fetch_range(st: Settings, start: date, end: date, retry_delays=(5, 15, 45),
@@ -110,7 +111,7 @@ def run_backtest(st: Settings, data: dict[str, pd.DataFrame], start: date, end: 
         raise ValueError(f"{start}～{end} 之间 {st.benchmark} 只有 {len(calendar)} 个交易日，无法回测")
 
     tz = ZoneInfo(st.timezone)
-    window = st.strategy.long_window + 60           # 每天只给最近这么多行：结果一样，速度快很多
+    window = history_needed(st.strategy) + 60       # 每天只给最近这么多行：结果一样，速度快很多
     db = InMemoryDB(st.initial_cash, st.market)
     notifier = _Collect()
     first_seen = {t: data[t].index[0] for t in st.watchlist}
@@ -256,7 +257,7 @@ def summary_text(r: BacktestResult, m: Metrics) -> str:
     lines = [
         f"=== {PROJECT_NAME} 回测 [{st.market}] {st.name} ｜模拟｜过去的成绩不代表未来 ===",
         f"期间：{r.start} ～ {r.end}（{m.trading_days} 个交易日）",
-        f"策略：{st.strategy.short_window}MA / {st.strategy.long_window}MA 交叉，下一个交易日开盘价成交",
+        f"策略：{describe(st.strategy)}",
         f"本金：{money(st, m.initial)}  →  期末：{money(st, m.final)}",
         "",
         f"{'':14}{'Bot':>12}{'买入持有指数':>14}",
@@ -374,8 +375,7 @@ ul{{margin:0;padding-left:20px}}
 <div class="ribbon">⚠️ 回测｜模拟｜虚拟资金 · Backtest with virtual money — 过去的成绩不代表未来，不构成投资建议</div>
 <div class="wrap">
 <h1>{e(st.flag)} {PROJECT_NAME} 回测 [{e(st.market)}] {e(st.name)}</h1>
-<p class="muted">{r.start} ～ {r.end}（{m.trading_days} 个交易日）｜{st.strategy.short_window}MA / {st.strategy.long_window}MA 交叉，
-今天收盘出信号、下一个交易日开盘价成交｜{cfg}</p>
+<p class="muted">{r.start} ～ {r.end}（{m.trading_days} 个交易日）｜{e(describe(st.strategy))}｜{cfg}</p>
 
 <div class="grid3">
  <div class="card"><div class="k">期末总资产</div><div class="v">{e(money(st, m.final))}</div><div class="muted">本金 {e(money(st, m.initial))}</div></div>
@@ -414,6 +414,8 @@ def main(argv=None) -> int:
     p.add_argument("--years", type=float, default=DEFAULT_YEARS, help=f"回测过去几年（默认 {DEFAULT_YEARS}）")
     p.add_argument("--start", type=date.fromisoformat, help="开始日期 YYYY-MM-DD（优先于 --years）")
     p.add_argument("--end", type=date.fromisoformat, help="结束日期 YYYY-MM-DD（默认今天）")
+    p.add_argument("--strategy", choices=("ma_crossover", "rsi_pullback", "rsi_daytrade"),
+                   help="试别的策略（不改 markets.yaml）")
     p.add_argument("--short", type=int, help="试别的短均线（不改 markets.yaml）")
     p.add_argument("--long", type=int, help="试别的长均线（不改 markets.yaml）")
     p.add_argument("--out", type=Path, default=REPORTS_DIR, help="HTML 报告放在哪个文件夹（默认 reports/）")
@@ -425,6 +427,8 @@ def main(argv=None) -> int:
     except ConfigError as e:
         print(f"配置错误：{e}")
         return 1
+    if a.strategy:
+        st = replace(st, strategy=replace(st.strategy, name=a.strategy))
     if a.short or a.long:
         st = replace(st, strategy=replace(st.strategy, short_window=a.short or st.strategy.short_window,
                                           long_window=a.long or st.strategy.long_window))
@@ -453,6 +457,8 @@ def main(argv=None) -> int:
 
     a.out.mkdir(parents=True, exist_ok=True)
     name = f"backtest_{st.market}_{result.start}_{result.end}"
+    if a.strategy:
+        name += f"_{a.strategy}"
     if a.short or a.long:
         name += f"_{st.strategy.short_window}-{st.strategy.long_window}"
     path = a.out / f"{name}.html"
