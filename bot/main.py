@@ -309,15 +309,23 @@ def execute(
     last_run_path: Optional[Path] = None,
     quiet_repeat: bool = False,
     catchup: bool = False,
+    dedupe_alerts: Optional[bool] = None,
 ) -> RunOutcome:
-    """最外层 try/except：任何异常 → 该市场不交易、发警报、记录 failed、非零退出码。"""
+    """最外层 try/except：任何异常 → 该市场不交易、发警报、记录 failed、非零退出码。
+
+    dedupe_alerts（默认跟 quiet_repeat 一样）：同一天一模一样的失败已经记录过 → 不再发同样的提醒。
+    """
+    if dedupe_alerts is None:
+        dedupe_alerts = quiet_repeat
     now = now or datetime.now(timezone.utc)
     started = datetime.now(timezone.utc)
     run_date = local_today(settings, now)
     mk = settings.market
 
+    alerts: list[str] = []
+
     def alert(error_type: str, detail: str, suggestion: str) -> None:
-        notifier.send(format_alert(error_type, detail, suggestion, mk))
+        alerts.append(format_alert(error_type, detail, suggestion, mk))
 
     try:
         outcome = run_once(settings, db, notifier, now, downloader, sleep, quiet_repeat, catchup)
@@ -347,6 +355,12 @@ def execute(
               "到 GitHub Actions 查看完整 log；修好前 bot 不会交易")
         outcome = RunOutcome("failed", f"{type(e).__name__}: {e}", 1)
 
+    if alerts and dedupe_alerts and outcome.status == "failed" and _same_failure_already_recorded(db, run_date, outcome):
+        log.warning("%s %s 同样的错误今天已经提醒过，这次不再发：%s", mk, run_date, outcome.message)
+    else:
+        for text in alerts:
+            notifier.send(text)
+
     if outcome.already_done:   # 今天的成功记录和 last_run.json 保持原样
         return outcome
 
@@ -355,12 +369,24 @@ def execute(
                              started, datetime.now(timezone.utc)))
     except Exception as e:  # noqa: BLE001
         log.error("写入 bot_runs 失败：%s", e)
-        alert("写入运行记录失败", str(e), "检查数据库连线")
+        notifier.send(format_alert("写入运行记录失败", str(e), "检查数据库连线", mk))
         outcome.exit_code = 1
 
     if last_run_path is not None and outcome.status != "failed":
         write_last_run(last_run_path, mk, run_date, outcome)
     return outcome
+
+
+def _same_failure_already_recorded(db, run_date: date, outcome: RunOutcome) -> bool:
+    """这一天已经记录过一模一样的失败（定时运行的后备 / 补跑重试）→ 不用再发一次提醒。
+
+    查不到（例如数据库连不上）就当作没有，照样发提醒。
+    """
+    try:
+        earlier = db.get_run(run_date)
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(earlier and earlier.status == "failed" and earlier.message == outcome.message[:1000])
 
 
 # ====================================================================== 补跑错过的交易日
@@ -427,7 +453,8 @@ def execute_with_catchup(
 
         log.info("补跑 %s %s", settings.market, day)
         out = execute(settings, db, notifier, now=close_time(settings, day), downloader=upto,
-                      sleep=sleep, last_run_path=last_run_path, quiet_repeat=True, catchup=True)
+                      sleep=sleep, last_run_path=last_run_path, quiet_repeat=True, catchup=True,
+                      dedupe_alerts=quiet_repeat)
         if out.status == "failed":
             return out
 

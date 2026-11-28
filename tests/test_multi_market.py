@@ -421,3 +421,74 @@ def test_catchup_on_past_holiday_is_silent(small_settings):
                          sleep=no_sleep, quiet_repeat=True)
     assert db.runs[TUE].status == "skipped" and db.runs[WED].status == "success"
     assert not any(m.startswith("📅") for m in n.sent)
+
+
+# ------------------------------------------------------------ 同一天同样的错误只提醒一次
+
+
+def _nan_on(st, day, ticker):
+    data = market(st, day)
+    bad = data(ticker, "2y").copy()
+    bad.loc[day, "Close"] = float("nan")
+    return lambda t, p: bad if t == ticker else data(t, p)
+
+
+def _alerts(n):
+    return [m for m in n.sent if m.startswith("⚠️")]
+
+
+def test_scheduled_repeat_of_same_failure_alerts_once(small_settings):
+    st = small_settings
+    db, n = InMemoryDB(st.initial_cash, "MY"), Quiet()
+    dl = _nan_on(st, TUE, "1155.KL")
+    for _ in range(3):                                   # 主要 + 两次后备，都遇到同一个 NaN
+        r = execute(st, db, n, now=my_close_run(TUE), downloader=dl, sleep=no_sleep, quiet_repeat=True)
+        assert r.status == "failed" and r.exit_code == 1
+    assert len(_alerts(n)) == 1
+    assert db.runs[TUE].status == "failed"
+
+
+def test_different_failure_same_day_alerts_again(small_settings):
+    st = small_settings
+    db, n = InMemoryDB(st.initial_cash, "MY"), Quiet()
+    for dl in (_nan_on(st, TUE, "1155.KL"), _nan_on(st, TUE, st.benchmark)):
+        execute(st, db, n, now=my_close_run(TUE), downloader=dl, sleep=no_sleep, quiet_repeat=True)
+    assert len(_alerts(n)) == 2
+    assert st.benchmark in _alerts(n)[1]
+
+
+def test_manual_run_always_alerts(small_settings):
+    st = small_settings
+    db, n = InMemoryDB(st.initial_cash, "MY"), Quiet()
+    dl = _nan_on(st, TUE, "1155.KL")
+    execute(st, db, n, now=my_close_run(TUE), downloader=dl, sleep=no_sleep, quiet_repeat=True)
+    execute(st, db, n, now=my_close_run(TUE), downloader=dl, sleep=no_sleep)        # 手动 Run workflow
+    assert len(_alerts(n)) == 2
+
+
+def test_catchup_failure_alert_follows_run_type(small_settings):
+    """补跑的那天一直失败：定时运行只提醒一次；手动运行照样提醒。"""
+    from bot.main import execute_with_catchup
+    st = small_settings
+    db, n = InMemoryDB(st.initial_cash, "MY"), Quiet()
+    _seed_success(db, MON)
+    broken = make_df([10.0] * 30, WED)
+    broken.loc[TUE, "Close"] = float("nan")
+    dl = market(st, WED, {"1155.KL": broken})
+    for _ in range(2):
+        execute_with_catchup(st, db, n, now=my_close_run(WED), downloader=dl, sleep=no_sleep, quiet_repeat=True)
+    assert len(_alerts(n)) == 1
+    execute_with_catchup(st, db, n, now=my_close_run(WED), downloader=dl, sleep=no_sleep)
+    assert len(_alerts(n)) == 2
+
+
+def test_alert_sent_when_previous_run_lookup_fails(small_settings):
+    st = small_settings
+    db, n = InMemoryDB(st.initial_cash, "MY"), Quiet()
+
+    def boom(day):
+        raise RuntimeError("数据库连不上")
+    db.get_run = boom
+    execute(st, db, n, now=my_close_run(TUE), downloader=_nan_on(st, TUE, "1155.KL"), sleep=no_sleep,
+            quiet_repeat=True)
+    assert len(_alerts(n)) == 1
